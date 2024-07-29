@@ -32,7 +32,7 @@ build/src/codegen/Elm/Kernel/List.elm: $(wildcard codegen/Elm/Kernel/*.elm)
 
 ALL_GENERATED = $(shell find generated -type f -name '*.elm')
 ALL_SRC = $(shell find src -type f -name '*.elm')
-dist/ui.js: src/UI.elm $(ALL_SRC) generated/Core/Basics.elm $(ALL_GENERATED)
+dist/ui.js: src/Main.elm $(ALL_SRC) generated/Core/Basics.elm $(ALL_GENERATED)
 	elm make $< --output $@
 
 .PHONY: measure

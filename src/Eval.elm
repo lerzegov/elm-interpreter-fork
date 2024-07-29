@@ -6,8 +6,9 @@ import Rope exposing (Rope)
 import Types exposing (CallTree, Error, Value)
 
 
+
 eval : String -> Result Error Value
-eval expressionSource =
+eval  expressionSource =
     let
         ( result, _, _ ) =
             traceOrEval { trace = True } expressionSource
@@ -16,19 +17,19 @@ eval expressionSource =
 
 
 trace : String -> ( Result Error Value, Rope CallTree, Rope String )
-trace expressionSource =
-    traceOrEval { trace = True } expressionSource
+trace  expressionSource =
+    traceOrEval  { trace = True } expressionSource
 
 
 traceOrEval : { trace : Bool } -> String -> ( Result Error Value, Rope CallTree, Rope String )
-traceOrEval cfg expressionSource =
+traceOrEval  cfg expressionSource =
     let
         source : String
         source =
             toModule expressionSource
 
         expression : Expression
-        expression =
+        expression = 
             Expression.FunctionOrValue [] "main"
     in
     Eval.Module.traceOrEvalModule cfg source expression

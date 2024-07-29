@@ -25,6 +25,7 @@ import Maybe.Extra
 import Syntax exposing (fakeNode)
 import Types exposing (Eval, EvalErrorData, EvalResult, Value(..))
 import Value exposing (typeError)
+import XModel
 
 
 type alias EvalFunction =
@@ -34,26 +35,27 @@ type alias EvalFunction =
     -> Node Expression
     -> Eval Value
 
-
+-- creates a dict of functions by module wrapping evalFunction
+-- in Kernel functions that take func as argument (e.g. foldl filter)
 functions : EvalFunction -> Dict ModuleName (Dict String ( Int, List Value -> Eval Value ))
 functions evalFunction =
     [ -- Elm.Kernel.Basics
       ( [ "Elm", "Kernel", "Basics" ]
-      , [ ( "acos", one float to float acos Core.Basics.acos )
+      , [ ( "acos", oneNumber acos round toFloat identity Core.Basics.acos )
         , ( "add", twoNumbers (+) (+) Core.Basics.add )
         , ( "and", two bool bool to bool (&&) Core.Basics.and )
-        , ( "asin", one float to float asin Core.Basics.asin )
-        , ( "atan", one float to float atan Core.Basics.atan )
+        , ( "asin", oneNumber asin round toFloat identity Core.Basics.asin )
+        , ( "atan", oneNumber atan round toFloat identity Core.Basics.atan )
         , ( "atan2", two float float to float atan2 Core.Basics.atan2 )
-        , ( "ceiling", one float to int ceiling Core.Basics.ceiling )
-        , ( "cos", one float to float cos Core.Basics.cos )
+        , ( "ceiling", oneNumber (ceiling>>toFloat) ceiling toFloat identity Core.Basics.ceiling )
+        , ( "cos", oneNumber cos round toFloat identity Core.Basics.cos )
         , ( "e", constant float e )
-        , ( "fdiv", two float float to float (/) Core.Basics.fdiv )
-        , ( "floor", one float to int floor Core.Basics.floor )
+        , ( "fdiv", twoNumbers (//) (/) Core.Basics.fdiv )
+        , ( "floor", oneNumber identity floor toFloat identity Core.Basics.floor )
         , ( "idiv", two int int to int (//) Core.Basics.idiv )
         , ( "isInfinite", one float to bool isInfinite Core.Basics.isInfinite )
         , ( "isNaN", one float to bool isNaN Core.Basics.isNaN )
-        , ( "log", one float to float (logBase e) log )
+        , ( "log", oneNumber (logBase e) round toFloat identity log )
         , ( "modBy", two int int to int modBy Core.Basics.modBy )
         , ( "mul", twoNumbers (*) (*) Core.Basics.mul )
         , ( "not", one bool to bool not Core.Basics.not )
@@ -61,13 +63,13 @@ functions evalFunction =
         , ( "pi", constant float pi )
         , ( "pow", twoNumbers (^) (^) Core.Basics.pow )
         , ( "remainderBy", two int int to int remainderBy Core.Basics.remainderBy )
-        , ( "round", one float to int round Core.Basics.round )
-        , ( "sin", one float to float sin Core.Basics.sin )
-        , ( "sqrt", one float to float sqrt Core.Basics.sqrt )
+        , ( "round", oneNumber (round >> toFloat) round toFloat identity Core.Basics.round )
+        , ( "sin", oneNumber sin round toFloat identity Core.Basics.sin )
+        , ( "sqrt", oneNumber sqrt round toFloat identity Core.Basics.sqrt )
         , ( "sub", twoNumbers (-) (-) Core.Basics.sub )
-        , ( "tan", one float to float tan Core.Basics.tan )
-        , ( "toFloat", one int to float toFloat Core.Basics.toFloat )
-        , ( "truncate", one float to int truncate Core.Basics.truncate )
+        , ( "tan", oneNumber tan round toFloat identity Core.Basics.tan )
+        , ( "toFloat", oneNumber identity round toFloat identity Core.Basics.toFloat )
+        , ( "truncate", oneNumber (truncate>>toFloat) truncate toFloat identity Core.Basics.truncate )
         , ( "xor", two bool bool to bool xor Core.Basics.xor )
         ]
       )
@@ -174,7 +176,7 @@ functions evalFunction =
         ]
       )
     ]
-        |> List.map
+        |> List.map -- creates a list of function dict for each module
             (\( moduleName, moduleFunctions ) ->
                 ( moduleName
                 , moduleFunctions
@@ -182,7 +184,7 @@ functions evalFunction =
                     |> Dict.fromList
                 )
             )
-        |> Dict.fromList
+        |> Dict.fromList -- creates a dict of module dicts
 
 
 log : FunctionImplementation
@@ -515,6 +517,46 @@ one :
 one firstSelector _ output f =
     oneWithError firstSelector To output (\v _ _ -> EvalResult.succeed (f v))
 
+oneNumber :
+    (Float -> Float)
+    -> (Float -> Int)
+    -> (Int -> Float)
+    -> (Int -> Int)
+    -> FunctionImplementation
+    -> ModuleName
+    -> ( Int, List Value -> Eval Value )
+oneNumber fFloat fFloatToInt fIntToFloat fInt implementation moduleName =
+    ( 1
+    , \args _ env ->
+        case args of
+            [ Float lf ] ->
+                EvalResult.succeed <| Float (fFloat lf)
+
+            [ Int li ] ->
+                EvalResult.succeed <| Int (fInt li)
+
+            [ DataAr ar ] ->
+                let
+                    dAr = XModel.valueToDataArray (DataAr ar)
+                    hasExternalDataset =  case Dict.get "hasExternalDataset" ar of
+                            Just (Bool s) -> s
+                            _ -> False
+                    calcData = Array.map fFloat dAr.data
+                    calcDAr = { dAr | data = calcData }
+                in
+                EvalResult.succeed <| (XModel.dataArrayWithDimsToValue calcDAr hasExternalDataset) 
+
+            [ _ ] ->
+                partiallyApply moduleName args implementation
+
+            [] ->
+                partiallyApply moduleName args implementation
+
+            _ ->
+                EvalResult.fail <| typeError env ("Expected one number or DataArray, got " ++ Debug.toString args)
+    )
+
+
 
 oneWithError :
     InSelector a xa
@@ -691,13 +733,13 @@ partiallyApply moduleName args implementation =
                 implementation.expression
 
 
-twoNumbers :
+twoNumbersOld :
     (Int -> Int -> Int)
     -> (Float -> Float -> Float)
     -> FunctionImplementation
     -> ModuleName
     -> ( Int, List Value -> Eval Value )
-twoNumbers fInt fFloat implementation moduleName =
+twoNumbersOld fInt fFloat implementation moduleName =
     ( 2
     , \args _ env ->
         case args of
@@ -721,4 +763,106 @@ twoNumbers fInt fFloat implementation moduleName =
 
             _ ->
                 EvalResult.fail <| typeError env "Expected two numbers"
+    )
+
+twoNumbers :
+    (Int -> Int -> Int)
+    -> (Float -> Float -> Float)
+    -> FunctionImplementation
+    -> ModuleName
+    -> ( Int, List Value -> Eval Value )
+twoNumbers fInt fFloat implementation moduleName =
+    ( 2
+    , \args _ env ->
+        case args of
+            [ Int li, Int ri ] ->
+                EvalResult.succeed <| Int (fInt li ri)
+
+            [ Int li, Float rf ] ->
+                EvalResult.succeed <| Float (fFloat (toFloat li) rf)
+
+            [ Float lf, Int ri ] ->
+                EvalResult.succeed <| Float (fFloat lf (toFloat ri))
+
+            [ Float lf, Float rf ] ->
+                EvalResult.succeed <| Float (fFloat lf rf)
+            
+            [DataAr ar, Float fl] ->
+                let
+                    dAr = XModel.valueToDataArray (DataAr ar)
+                    hasExternalDataset =  case Dict.get "hasExternalDataset" ar of
+                        Just (Bool s) -> s
+                        _ -> False
+                    calcData = Array.map (\x -> fFloat x fl) dAr.data
+                    calcDAr = { dAr | data = calcData }  
+
+                in
+                EvalResult.succeed <| (XModel.dataArrayWithDimsToValue calcDAr hasExternalDataset)
+
+            [Float fl, DataAr ar] ->
+                let
+                    dAr = XModel.valueToDataArray (DataAr ar)
+                    hasExternalDataset =  case Dict.get "hasExternalDataset" ar of
+                                            Just (Bool s) -> s
+                                            _ -> False
+                    calcData = Array.map (\x -> fFloat fl x ) dAr.data
+                    calcDAr = { dAr | data = calcData }  
+                in
+                EvalResult.succeed <| (XModel.dataArrayWithDimsToValue calcDAr hasExternalDataset)
+            [DataAr ar, Int ri] ->
+                let
+                    dAr = XModel.valueToDataArray (DataAr ar)
+                    hasExternalDataset =  case Dict.get "hasExternalDataset" ar of
+                                            Just (Bool s) -> s
+                                            _ -> False
+                    intToFloat = toFloat ri
+                    calcData = Array.map (\x -> fFloat x intToFloat) dAr.data
+                    calcDAr = { dAr | data = calcData }  
+
+                in
+                EvalResult.succeed <| (XModel.dataArrayWithDimsToValue calcDAr hasExternalDataset)
+
+            [Int li, DataAr ar] ->
+                let
+                    dAr = XModel.valueToDataArray (DataAr ar)
+                    hasExternalDataset =  case Dict.get "hasExternalDataset" ar of
+                                            Just (Bool s) -> s
+                                            _ -> False
+                    intToFloat = toFloat li
+                    calcData = Array.map (\x -> fFloat intToFloat x ) dAr.data
+                    calcDAr = { dAr | data = calcData }  
+                in
+                EvalResult.succeed <| (XModel.dataArrayWithDimsToValue calcDAr hasExternalDataset)
+                
+            [ DataAr la, DataAr ra ] ->
+                let
+                    leftDAr = XModel.valueToDataArray (DataAr la)
+                    leftHasExternalDataset =  case Dict.get "hasExternalDataset" la of
+                                            Just (Bool s) -> s
+                                            _ -> False
+                    rightDAr = XModel.valueToDataArray (DataAr ra)
+                    rightHasExternalDataset =  case Dict.get "hasExternalDataset" ra of
+                                                Just (Bool s) -> s
+                                                _ -> False
+                    (adjLeftDAr, adjRightDAr, adjHasExternalDataset) = 
+                        if leftHasExternalDataset && not rightHasExternalDataset then
+                            (rightDAr, leftDAr, rightHasExternalDataset)
+                        else    
+                            (leftDAr, rightDAr, leftHasExternalDataset)
+                    
+                    calcDAr =                         
+                            XModel.funcDataArrayPairAr adjLeftDAr adjRightDAr  fFloat
+                                |> Tuple.first |> Maybe.withDefault XModel.emptyDataArray
+
+                in
+                EvalResult.succeed <| (XModel.dataArrayWithDimsToValue calcDAr adjHasExternalDataset)
+
+            [ _ ] ->
+                partiallyApply moduleName args implementation
+
+            [] ->
+                partiallyApply moduleName args implementation
+
+            _ ->
+                EvalResult.fail <| typeError env ("Expected two numbers" ++ Debug.toString args)
     )

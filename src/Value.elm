@@ -1,13 +1,14 @@
 module Value exposing (fromOrder, nameError, toArray, toExpression, toOrder, toString, todo, typeError, unsupported)
 
 import Array exposing (Array)
-import Elm.Syntax.Expression as Expression exposing (Expression)
+import Elm.Syntax.Expression as Expression exposing (Expression(..))
 import Elm.Syntax.Node exposing (Node)
 import Expression.Extra
 import FastDict as Dict
 import String exposing (String)
 import Syntax exposing (fakeNode)
 import Types exposing (Env, EvalErrorData, EvalErrorKind(..), Value(..))
+import TypesXModel exposing ( ..)
 
 
 typeError : Env -> String -> EvalErrorData
@@ -130,6 +131,16 @@ toExpression value =
                     :: List.map toExpression args
                 )
                     |> Expression.Application
+
+            DataAr fields -> -- copied from Record
+                fields
+                    |> Dict.toList
+                    |> List.map
+                        (\( fieldName, fieldValue ) ->
+                            fakeNode ( fakeNode fieldName, toExpression fieldValue )
+                        )
+                    |> Expression.RecordExpr
+
 
 
 arrayToExpression : String -> List Value -> Expression

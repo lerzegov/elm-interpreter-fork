@@ -7,5 +7,8 @@
     "elm-test": "^0.19.1-revision12",
     "elm-test-rs": "^3.0.0-5",
     "elm-watch": "^2.0.0-beta.2"
+  },
+  "dependencies": {
+    "array-extra": "github:elm-community/array-extra"
   }
 }

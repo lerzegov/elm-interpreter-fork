@@ -22,16 +22,29 @@ import TopologicalSort
 import Types exposing (CallTree(..), Env, EnvValues, Eval, EvalErrorData, EvalResult, PartialEval, PartialResult, Value(..))
 import Unicode
 import Value exposing (nameError, typeError, unsupported)
+import Elm.RawFile exposing (moduleName)
+import TypesXModel exposing (..)
+import XModel 
+import FastDict as Dict exposing (Dict)
+import Array exposing (Array)
 
 
+
+-- called by Module.traceOrEvalModule
+-- recursively evaluates the expression tree in the given expression node
 evalExpression : Node Expression -> Eval Value
-evalExpression initExpression initCfg initEnv =
+evalExpression initExpression initCfg initEnv = 
+-- args are the expression node, the Bool trace config, and the environment
+    -- single calls are inside the recursion and return a PartialResult
+    -- in some calls, env is passed as an argument
     Recursion.runRecursion
-        (\( Node range expression, cfg, env ) ->
+        -- range not used in calls, only passed to CallTree in result
+        (\( Node range expression, cfg, env ) -> 
             let
-                result : PartialResult Value
+                result : PartialResult Value -- PartialResult is a Rec wrapper for Result
                 result =
                     case expression of
+                        -- cases expression is a final value
                         Expression.UnitExpr ->
                             Types.succeedPartial Unit
 
@@ -50,6 +63,7 @@ evalExpression initExpression initCfg initEnv =
                         Expression.CharLiteral c ->
                             Types.succeedPartial <| Char c
 
+                        -- cases expression needs to be evaluated with dedicated functions
                         Expression.OperatorApplication "||" _ l r ->
                             evalShortCircuitOr l r cfg env
 
@@ -68,10 +82,10 @@ evalExpression initExpression initCfg initEnv =
                             in
                             evalApplication first rest cfg env
 
-                        Expression.Application [] ->
+                        Expression.Application [] -> -- case empty application
                             Types.failPartial <| typeError env "Empty application"
 
-                        Expression.Application (first :: rest) ->
+                        Expression.Application (first :: rest) -> -- case application with code
                             evalApplication first rest cfg env
 
                         Expression.FunctionOrValue moduleName name ->
@@ -123,7 +137,7 @@ evalExpression initExpression initCfg initEnv =
                             Types.failPartial <| unsupported env "GLSL not supported"
             in
             result
-                |> Recursion.map
+                |> Recursion.map -- lambda func applied to Rec = result of a Recursion conputation
                     (\( value, trees, logs ) ->
                         ( value
                         , CallNode
@@ -146,7 +160,7 @@ evalShortCircuitAnd l r cfg env =
         (\value ->
             case value of
                 Bool False ->
-                    Types.succeedPartial <| Bool False
+                    Types.succeedPartial <| Bool False -- succeedPartial wraps result in recursion and in EvalResult Ok => Recursion.base (EvalResult.succeed v) 
 
                 Bool True ->
                     Recursion.recurse ( r, cfg, env )
@@ -158,31 +172,31 @@ evalShortCircuitAnd l r cfg env =
 
 evalShortCircuitOr : Node Expression -> Node Expression -> PartialEval Value
 evalShortCircuitOr l r cfg env =
-    Types.recurseThen ( l, cfg, env )
+    Types.recurseThen ( l, cfg, env ) -- processes left side of the || operator
         (\value ->
             case value of
                 Bool True ->
                     Types.succeedPartial <| Bool True
 
                 Bool False ->
-                    Recursion.recurse ( r, cfg, env )
+                    Recursion.recurse ( r, cfg, env ) -- processes right side of the || operator if left side is False
 
                 v ->
                     Types.failPartial <| typeError env <| "|| applied to non-Bool " ++ Value.toString v
         )
 
 
-evalTuple : List (Node Expression) -> PartialEval Value
+evalTuple : List (Node Expression) -> PartialEval Value -- returns a Tuple or Triple Value
 evalTuple exprs cfg env =
     case exprs of
         [] ->
             Types.succeedPartial Unit
 
         [ c ] ->
-            Recursion.recurse ( c, cfg, env )
+            Recursion.recurse ( c, cfg, env ) -- single call
 
         [ l, r ] ->
-            Types.recurseThen ( l, cfg, env )
+            Types.recurseThen ( l, cfg, env ) -- first of two calls
                 (\lValue ->
                     Types.recurseThen ( r, cfg, env )
                         (\rValue ->
@@ -191,7 +205,7 @@ evalTuple exprs cfg env =
                 )
 
         [ l, m, r ] ->
-            Types.recurseThen ( l, cfg, env )
+            Types.recurseThen ( l, cfg, env ) -- first of three calls
                 (\lValue ->
                     Types.recurseThen ( m, cfg, env )
                         (\mValue ->
@@ -209,13 +223,14 @@ evalTuple exprs cfg env =
 evalApplication : Node Expression -> List (Node Expression) -> PartialEval Value
 evalApplication first rest cfg env =
     let
+        -- local func then called on partiallyApplied Expression
         inner : Env -> List Value -> List (Node Pattern) -> Maybe QualifiedNameRef -> Node Expression -> PartialResult Value
         inner localEnv oldArgs patterns maybeQualifiedName implementation =
             let
                 ( used, leftover ) =
                     List.Extra.splitAt (patternsLength - oldArgsLength) rest
 
-                oldArgsLength : Int
+                oldArgsLength : Int -- oldArgs may be values for Expressions already evaluated
                 oldArgsLength =
                     List.length oldArgs
 
@@ -229,14 +244,14 @@ evalApplication first rest cfg env =
                     ( fakeNode <|
                         Expression.Application
                             (fakeNode
-                                (Expression.Application (first :: used))
-                                :: leftover
+                                (Expression.Application (first :: used)) -- first [expression] is passed to func call
+                                :: leftover -- rest [List Expression] is splitted into used and leftover
                             )
                     , cfg
                     , env
                     )
 
-            else
+            else -- rest not split
                 Types.recurseMapThen ( rest, cfg, env )
                     (\values ->
                         let
@@ -257,15 +272,17 @@ evalApplication first rest cfg env =
                             evalFullyApplied localEnv args patterns maybeQualifiedName implementation cfg env
                     )
     in
+    -- recurseThen : ( Node Expression, Types.Config, Env ) -> (out -> PartialResult out) -> PartialResult out
+    -- recurseThen expr f
     Types.recurseThen ( first, cfg, env )
-        (\firstValue ->
+        (\firstValue -> -- lambda func passed to recurseThen
             case firstValue of
                 Custom name customArgs ->
                     Types.recurseMapThen ( rest, cfg, env )
                         (\values -> Types.succeedPartial <| Custom name (customArgs ++ values))
 
                 PartiallyApplied localEnv oldArgs patterns maybeQualifiedName implementation ->
-                    inner localEnv oldArgs patterns maybeQualifiedName implementation
+                    inner localEnv oldArgs patterns maybeQualifiedName implementation -- call to local func `inner`
 
                 other ->
                     Types.failPartial <|
@@ -307,13 +324,13 @@ evalFullyApplied localEnv args patterns maybeQualifiedName implementation cfg en
                             Syntax.qualifiedNameToString qualifiedName
                     in
                     case Dict.get moduleName kernelFunctions of
-                        Nothing ->
-                            Types.failPartial <| nameError env fullName
+                        Nothing -> --gig5
+                            Types.failPartial <| nameError env (fullName ++ "-gig5")
 
                         Just kernelModule ->
                             case Dict.get name kernelModule of
-                                Nothing ->
-                                    Types.failPartial <| nameError env fullName
+                                Nothing -> -- gig6
+                                    Types.failPartial <| nameError env (fullName ++ "-gig6")
 
                                 Just ( _, f ) ->
                                     let
@@ -355,7 +372,7 @@ evalFullyApplied localEnv args patterns maybeQualifiedName implementation cfg en
 
 
 call : Maybe QualifiedNameRef -> Node Expression -> PartialEval Value
-call maybeQualifiedName implementation cfg env =
+call maybeQualifiedName implementation cfg env = -- calls func visible in env
     case maybeQualifiedName of
         Just qualifiedName ->
             Recursion.recurse
@@ -370,7 +387,7 @@ call maybeQualifiedName implementation cfg env =
 
 evalFunctionOrValue : ModuleName -> String -> PartialEval Value
 evalFunctionOrValue moduleName name cfg env =
-    if isVariant name then
+    if isVariant name then -- checks if name is a variant, i.e. starts with an uppercase letter
         evalVariant moduleName env name
 
     else
@@ -391,14 +408,14 @@ fixModuleName moduleName env =
 
 
 evalVariant : ModuleName -> Env -> String -> PartialResult Value
-evalVariant moduleName env name =
+evalVariant moduleName env name = -- returns a Variant with Union name and variant Name (e.g. Maybe Just)
     let
         variant0 : ModuleName -> String -> PartialResult Value
-        variant0 modName ctorName =
+        variant0 modName ctorName = -- returns a Variant Value with Variant name and no arguments
             Types.succeedPartial <| Custom { moduleName = modName, name = ctorName } []
 
         variant1 : ModuleName -> String -> PartialResult Value
-        variant1 modName ctorName =
+        variant1 modName ctorName = -- returns a Variant Value with Variant name and one argument
             Types.succeedPartial <|
                 PartiallyApplied
                     (Environment.empty modName)
@@ -454,20 +471,20 @@ evalVariant moduleName env name =
 
 
 evalNonVariant : ModuleName -> String -> PartialEval Value
-evalNonVariant moduleName name cfg env =
+evalNonVariant moduleName name cfg env = -- evaluates a non-variant function
     case moduleName of
-        "Elm" :: "Kernel" :: _ ->
-            case Dict.get moduleName env.functions of
-                Nothing ->
+        "Elm" :: "Kernel" :: _ -> -- checks if moduleName is Elm.Kernel._ e.g. Basics (math bool), Bitwise, Debug, List, String, Utils, JsArray
+            case Dict.get moduleName env.functions of -- checks if Elm.Kernel is extended in env.functions
+                Nothing ->  -- extension module not found, executes evalKernelFunction
                     evalKernelFunction moduleName name cfg env
 
-                Just kernelModule ->
-                    case Dict.get name kernelModule of
-                        Nothing ->
+                Just kernelModule -> -- extension module found
+                    case Dict.get name kernelModule of -- checks if function name is in the extension module
+                        Nothing -> -- function name not found in extension module, calls evalKernelFunction
                             evalKernelFunction moduleName name cfg env
 
-                        Just function ->
-                            PartiallyApplied
+                        Just function -> -- function name found in extension module
+                            PartiallyApplied -- calls the implementation of the function in env.functions
                                 (Environment.call moduleName name env)
                                 []
                                 function.arguments
@@ -475,37 +492,38 @@ evalNonVariant moduleName name cfg env =
                                 function.expression
                                 |> Types.succeedPartial
 
-        _ ->
-            case ( moduleName, Dict.get name env.values ) of
-                ( [], Just (PartiallyApplied localEnv [] [] maybeName implementation) ) ->
-                    call maybeName implementation cfg localEnv
+        -- gets values from the environment stored in env.values
+        _ -> -- moduleName is not Elm.Kernel._
+            case ( moduleName, Dict.get name env.values ) of -- checks if name is in env.values
+                ( [], Just (PartiallyApplied localEnv [] [] maybeName implementation) ) -> -- finds a function without moduleName
+                    call maybeName implementation cfg localEnv -- .. calls its implementation
 
-                ( [], Just value ) ->
+                ( [], Just value ) -> -- finds a value without moduleName and returns it
                     Types.succeedPartial value
 
-                _ ->
+                _ -> -- moduleName is not empty or name not found in env.values
                     let
-                        fixedModuleName : ModuleName
+                        fixedModuleName : ModuleName -- cleans/complete moduleName
                         fixedModuleName =
                             fixModuleName moduleName env
 
                         maybeFunction : Maybe Expression.FunctionImplementation
-                        maybeFunction =
+                        maybeFunction = -- gets the function implementation from env.functions or Core.Basics.functions
                             let
                                 fromModule : Maybe Expression.FunctionImplementation
                                 fromModule =
                                     Dict.get fixedModuleName env.functions
                                         |> Maybe.andThen (Dict.get name)
                             in
-                            if List.isEmpty moduleName then
+                            -- if moduleName is empty ...
+                            if List.isEmpty moduleName then 
                                 case fromModule of
-                                    Just function ->
+                                    Just function -> -- ... implementation found (let .. in ???)
                                         Just function
-
-                                    Nothing ->
+                                    Nothing -> -- .. no implementation found, checks Core.Basics.functions
                                         Dict.get name Core.Basics.functions
 
-                            else
+                            else -- if moduleName is not empty, returns the implementation from env.functions
                                 fromModule
                     in
                     case maybeFunction of
@@ -515,11 +533,11 @@ evalNonVariant moduleName name cfg env =
                                 qualifiedNameRef =
                                     { moduleName = fixedModuleName, name = name }
                             in
-                            if List.isEmpty function.arguments then
+                            if List.isEmpty function.arguments then -- if function has no arguments calls its expression
                                 call (Just qualifiedNameRef) function.expression cfg env
 
                             else
-                                PartiallyApplied
+                                PartiallyApplied -- if function has arguments, returns a PartiallyApplied Value withs its arguments
                                     (Environment.call fixedModuleName name env)
                                     []
                                     function.arguments
@@ -527,14 +545,70 @@ evalNonVariant moduleName name cfg env =
                                     function.expression
                                     |> Types.succeedPartial
 
-                        Nothing ->
-                            Syntax.qualifiedNameToString
-                                { moduleName = fixedModuleName
-                                , name = name
-                                }
-                                |> nameError env
-                                |> Types.failPartial
+                        Nothing -> -- gig7
+                            -- case added by Luca
+                            let
+                               
+                                maybeXModel = env.envXModel
+                                maybeDatasetRef = List.head fixedModuleName
+                                retRangeDef = case (maybeXModel, maybeDatasetRef) of
+                                    (Just xModel, Just curDatasetRef) -> 
+                                        XModel.rangeNameToDef xModel curDatasetRef name
+                                    _ -> Err "error in getExprDataArray from rangeNameToDef"
+                            in
+                            -- Debug.log ("with moduleName=" ++ Debug.toString moduleName ++ " and curDatasetRef=" ++ Debug.toString maybeDatasetRef ++ " retRangeDef: " ++ Debug.toString retRangeDef) <|
+                            case retRangeDef of
+                                    Ok rangeDef -> -- handle swap order in call to binerayFunc application
+                                        let 
+                                            hasExternalDataset = 
+                                                if rangeDef.datasetRef /= maybeDatasetRef then
+                                                    False
+                                                else
+                                                    True
+                                        in
+                                        case (rangeDef.datasetRef, rangeDef.dataArrayRef, rangeDef.dimCoords) of
+                                            (Just datasetRef, Just dataArrayRef, Just []) ->
+                                                case XModel.getParsedDataArrayToValue maybeXModel datasetRef dataArrayRef hasExternalDataset of
+                                                    Just value ->
+                                                        Types.succeedPartial value
+                                                    Nothing ->
+                                                        (Syntax.qualifiedNameToString
+                                                            { moduleName = fixedModuleName
+                                                            , name = name
+                                                            } ++ "-gig7:noDataArray")
+                                                            |> nameError env
+                                                            |> Types.failPartial
+                                            (Just datasetRef, Just dataArrayRef, Just dimCoordTuples) ->
+                                                case XModel.locDataArrayfromRangeDefToValue maybeXModel datasetRef dataArrayRef dimCoordTuples hasExternalDataset of
+                                                    Just value ->
+                                                        Types.succeedPartial value
+                                                    Nothing ->
+                                                        (Syntax.qualifiedNameToString
+                                                            { moduleName = fixedModuleName
+                                                            , name = name
+                                                            } ++ "-gig7:wrongLocParsedDataArray")
+                                                            |> nameError env
+                                                            |> Types.failPartial
+                                            (_, _, _) ->
+                                                 (Syntax.qualifiedNameToString
+                                                    { moduleName = fixedModuleName
+                                                    , name = name
+                                                    } ++ "-gig7-parseError on name: " ++ name ++ " " 
+                                                        --++ Debug.toString(CalcEngine.getEnvFunctions env "Ce")
+                                                    )
+                                                    |> nameError env
+                                                    |> Types.failPartial
 
+                                    _ ->
+                                        (Syntax.qualifiedNameToString
+                                            { moduleName = fixedModuleName
+                                            , name = name
+                                            } ++ "-gig8-parseError on name: " ++ name ++ " " 
+                                                --++ Debug.toString(CalcEngine.getEnvFunctions env "Ce")
+                                            )
+                                            |> nameError env
+                                            |> Types.failPartial
+                            
 
 evalIfBlock : Node Expression -> Node Expression -> Node Expression -> PartialEval Value
 evalIfBlock cond true false cfg env =
@@ -580,8 +654,10 @@ kernelFunctions : Dict ModuleName (Dict String ( Int, List Value -> Eval Value )
 kernelFunctions =
     Kernel.functions evalFunction
 
-
-evalFunction : Kernel.EvalFunction
+-- evalFunction is a function that evaluates a function
+-- type alias EvalFunction = List Value -> List (Node Pattern) -> Maybe QualifiedNameRef-> Node Expression 
+--    -> Eval Value
+evalFunction : Kernel.EvalFunction -- built-in Elm functions
 evalFunction oldArgs patterns functionName implementation cfg localEnv =
     let
         oldArgsLength : Int
@@ -620,14 +696,14 @@ evalFunction oldArgs patterns functionName implementation cfg localEnv =
                             fullName =
                                 Syntax.qualifiedNameToString { moduleName = moduleName, name = name }
                         in
-                        case Dict.get moduleName kernelFunctions of
+                        case Dict.get moduleName kernelFunctions of -- gig1
                             Nothing ->
-                                EvalResult.fail <| nameError localEnv fullName
+                                EvalResult.fail <| nameError localEnv (fullName ++ "-gig1")
 
                             Just kernelModule ->
-                                case Dict.get name kernelModule of
+                                case Dict.get name kernelModule of -- gig2
                                     Nothing ->
-                                        EvalResult.fail <| nameError localEnv fullName
+                                        EvalResult.fail <| nameError localEnv (fullName ++ "-gig1")
 
                                     Just ( _, f ) ->
                                         f []
@@ -643,14 +719,17 @@ evalFunction oldArgs patterns functionName implementation cfg localEnv =
 
 evalKernelFunction : ModuleName -> String -> PartialEval Value
 evalKernelFunction moduleName name cfg env =
+
     case Dict.get moduleName kernelFunctions of
-        Nothing ->
-            Types.failPartial <| nameError env (String.join "." moduleName)
+        Nothing -> -- gig3
+            Types.failPartial <| nameError env ((String.join "." moduleName) ++ "-gig3")
 
         Just kernelModule ->
             case Dict.get name kernelModule of
-                Nothing ->
-                    Types.failPartial <| nameError env <| Syntax.qualifiedNameToString { moduleName = moduleName, name = name }
+                Nothing -> --gig4
+                    Types.failPartial <| nameError env 
+                        <| (Syntax.qualifiedNameToString { moduleName = moduleName, name = name }
+                                ++ "-gig4")
 
                 Just ( argCount, f ) ->
                     if argCount == 0 then
@@ -693,6 +772,18 @@ evalNegation child cfg env =
 
                 Float f ->
                     Types.succeedPartial <| Float -f
+                DataAr ar ->
+                    let
+                        dAr = XModel.valueToDataArray (DataAr ar)
+                        hasExternalDataset =  case Dict.get "hasExternalDataset" ar of
+                            Just (Bool s) -> s
+                            _ -> False
+                        calcData = Array.map (\x -> -x) dAr.data
+                        calcDAr = { dAr | data = calcData }
+                        calcDArValue = XModel.dataArrayToValue calcDAr hasExternalDataset
+
+                    in
+                    Types.succeedPartial <| calcDArValue 
 
                 _ ->
                     Types.failPartial <| typeError env "Trying to negate a non-number"
@@ -964,12 +1055,12 @@ evalRecordAccessFunction field =
                 (fakeNode <| String.dropLeft 1 field)
         )
 
-
-evalRecordUpdate : Node String -> List (Node Expression.RecordSetter) -> PartialEval Value
-evalRecordUpdate (Node range name) setters cfg env =
+-- orginal version, only updated fields remained in the returbed record
+evalRecordUpdateOld : Node String -> List (Node Expression.RecordSetter) -> PartialEval Value
+evalRecordUpdateOld (Node range name) setters cfg env =
     Types.recurseThen ( Node range <| Expression.FunctionOrValue [] name, cfg, env )
         (\value ->
-            case value of
+            case value of -- value is the complete record to be updated
                 Record _ ->
                     let
                         ( fieldNames, fieldExpressions ) =
@@ -994,6 +1085,39 @@ evalRecordUpdate (Node range name) setters cfg env =
                     Types.failPartial <| typeError env "Trying to update fields on a value which is not a record"
         )
 
+-- added by Luca and coded by chatGpt, updates starting record with new values
+evalRecordUpdate : Node String -> List (Node Expression.RecordSetter) -> PartialEval Value
+evalRecordUpdate (Node range name) setters cfg env =
+    -- Start by evaluating the record name to fetch its current value
+    Types.recurseThen (Node range <| Expression.FunctionOrValue [] name, cfg, env)
+        (\value ->
+            case value of
+                Record recDict ->
+                    -- Extract field names and their corresponding expressions
+                    let
+                        (fieldNames, fieldExpressions) =
+                            List.unzip <| List.map (\(Node _ (Node _ fieldName, fieldExpression)) ->
+                                (fieldName, fieldExpression)
+                            ) setters
+                    in
+                    -- Evaluate expressions to get field values, and update record dictionary
+                    Types.recurseMapThen (fieldExpressions, cfg, env)
+                        (\fieldValues ->
+                            -- Update the dictionary with new values
+                            let
+                                updatedDict =
+                                    List.foldr
+                                        (\(nm, vl) dict -> Dict.insert nm vl dict)
+                                        recDict
+                                        (List.Extra.zip fieldNames fieldValues)
+                            in
+                            -- Package the updated dictionary into a Record Value
+                            Types.succeedPartial (Record updatedDict)
+                        )
+                _ ->
+                    -- Handle the case where the fetched value is not a Record
+                    Types.failPartial <| typeError env "Trying to update fields on a value which is not a record"
+        )
 
 evalOperator : String -> PartialEval Value
 evalOperator opName _ env =
@@ -1054,6 +1178,7 @@ evalCase { expression, cases } cfg env =
                         (Ok Nothing)
                         cases
             in
+
             case maybePartial of
                 Ok Nothing ->
                     Types.failPartial <| typeError env <| "Missing case branch for " ++ Value.toString exprValue
@@ -1093,7 +1218,9 @@ match env (Node _ pattern) value =
                 Ok (Just w) ->
                     f w
     in
+
     case ( pattern, value ) of
+
         ( UnitPattern, Unit ) ->
             ok Dict.empty
 
