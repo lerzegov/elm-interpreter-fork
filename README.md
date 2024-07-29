@@ -6,6 +6,7 @@ The key function is `Eval.eval : String -> Result Error Value` that takes as inp
 
 # about this fork
 In this fork, elm-interpreter has been modified to manage additional datatypes in the calculation environmenta as required by elm-foldbook, a multi-dim spreadsheet experiment
+_Not made into an elm pubished package yet_
 
 # Testing
 
