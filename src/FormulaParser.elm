@@ -1,4 +1,4 @@
-module FormulaParser exposing (..)module FormulaParser exposing (..)
+module FormulaParser exposing (..)
 
 import Parser exposing (..)
 import Char exposing (toUpper, toLower)

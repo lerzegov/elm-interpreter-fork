@@ -2,7 +2,7 @@
     "targets": {
         "Main": {
             "inputs": [
-                "src/Main.elm"
+                "src/Ui.elm"
             ],
             "output": "dist/ui.js"
         }

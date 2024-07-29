@@ -197,6 +197,20 @@ innerCompare l r env =
         ( PartiallyApplied _ _ _ _ _, _ ) ->
             uncomparable ()
 
+-- copied from Record
+        ( DataAr ldict, DataAr rdict ) ->
+            let
+                toValue : Dict String Value -> Value
+                toValue dict =
+                    dict
+                        |> Dict.toList
+                        |> List.map (\( k, v ) -> Tuple (String k) v)
+                        |> List
+            in
+            innerCompare (toValue ldict) (toValue rdict) env
+
+        ( DataAr _, _ ) ->
+            uncomparable ()
 
 comparison : List Order -> ModuleName -> ( Int, List Value -> Eval Value )
 comparison orders _ =

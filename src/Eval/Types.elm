@@ -3,7 +3,7 @@ module Eval.Types exposing (combineMap, errorToString, evalErrorToString, failPa
 import Elm.Syntax.Expression exposing (Expression)
 import Elm.Syntax.Node exposing (Node)
 import EvalResult
-import Parser
+import Parser exposing (DeadEnd, Problem(..))
 import Recursion exposing (Rec)
 import Recursion.Traverse
 import Rope
@@ -72,11 +72,43 @@ errorToString : Error -> String
 errorToString err =
     case err of
         ParsingError deadEnds ->
-            "Parsing error: " ++ Parser.deadEndsToString deadEnds
+            "Parsing error: " ++ myDeadEndsToString deadEnds
 
         EvalError evalError ->
             evalErrorToString evalError
+    
+        IncompleteCodeError msgString ->
+            msgString
 
+-- my substitute for Parser.deadEndsToString
+myDeadEndsToString : List DeadEnd -> String
+myDeadEndsToString deadEnds =
+    let
+        problemToString : Problem -> String
+        problemToString curProblem =
+            case curProblem of
+                Expecting str -> "Expecting: " ++ str
+                ExpectingInt -> "Expecting an integer"
+                ExpectingHex -> "Expecting a hexadecimal number"
+                ExpectingOctal -> "Expecting an octal number"
+                ExpectingBinary -> "Expecting a binary number"
+                ExpectingFloat -> "Expecting a floating-point number"
+                ExpectingNumber -> "Expecting a number"
+                ExpectingVariable -> "Expecting a variable"
+                ExpectingSymbol str -> "Expecting symbol: " ++ str
+                ExpectingKeyword str -> "Expecting keyword: " ++ str
+                ExpectingEnd -> "Expecting end of input"
+                UnexpectedChar -> "Unexpected character"
+                Problem str -> "Problem: " ++ str
+                BadRepeat -> "Bad repeat pattern"
+
+        deadEndToString : DeadEnd -> String
+        deadEndToString deadEnd =
+            "Error at row " ++ String.fromInt(deadEnd.row) ++ ", column " ++ String.fromInt(deadEnd.col) ++ ": " ++ problemToString deadEnd.problem
+
+        errorStrings = List.map deadEndToString deadEnds
+    in
+    String.join "\n" errorStrings
 
 evalErrorToString : EvalErrorData -> String
 evalErrorToString { callStack, error } =
@@ -96,6 +128,7 @@ evalErrorToString { callStack, error } =
                 Todo message ->
                     "Todo: " ++ message
     in
+    -- Debug.log("evalError:" ++ (Debug.toString error))
     messageWithType
         ++ "\nCall stack:\n - "
         ++ String.join "\n - " (List.reverse <| List.map Syntax.qualifiedNameToString callStack)

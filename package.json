@@ -9,6 +9,5 @@
     "elm-watch": "^2.0.0-beta.2"
   },
   "dependencies": {
-    "array-extra": "github:elm-community/array-extra"
   }
 }
