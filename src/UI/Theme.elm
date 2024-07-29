@@ -1,4 +1,4 @@
-module UI.Theme exposing (box, button, column, padding, row, rythm, spacing, style, wrappedRow)
+module UI.Theme exposing (box, boxRow, button, column, padding, row, rythm, spacing, style, wrappedRow)
 
 import Element exposing (Attribute, Element, alignTop, el, text)
 import Element.Border as Border
@@ -50,6 +50,20 @@ style key value =
 box : String -> List (Attribute msg) -> List (Element msg) -> Element msg
 box label attrs content =
     column
+        (padding
+            :: Border.width 1
+            :: alignTop
+            :: attrs
+        )
+        ((el [ Font.bold ] <|
+            text label
+         )
+            :: content
+        )
+
+boxRow : String -> List (Attribute msg) -> List (Element msg) -> Element msg
+boxRow label attrs content =
+    row
         (padding
             :: Border.width 1
             :: alignTop

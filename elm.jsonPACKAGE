@@ -1,0 +1,50 @@
+{
+    "type": "package",
+    "name": "lerzegov/elm-interpreter-fork",
+    "summary": "fork to fit into elm-foldbook, a multi-dim spreadsheet experiment",
+    "license": "BSD-3-Clause",
+    "version": "1.0.0",
+    "exposed-modules": [
+      "AppUtil", "Eval.Expression", "Eval.Module", "Environment", "Eval", "FormulaParser",
+      "Kernel", "Types", "TypesXmodel", "XModel", "XParser"
+    ],
+    "elm-version": "0.19.1 <= v < 0.20.0",
+    "dependencies": {
+            "cuducos/elm-format-number": "9.0.1 <= v < 9.1.0",
+            "elm/browser": "1.0.2 <= v < 1.1.0",
+            "elm/core": "1.0.5 <= v < 1.1.0",
+            "elm/html": "1.0.0 <= v < 1.1.0",
+            "elm/json": "1.1.3 <= v < 1.2.0",
+            "elm/parser": "1.1.0 <= v < 1.2.0",
+            "elm/regex": "1.0.0 <= v < 1.1.0",
+            "elm/time": "1.0.0 <= v < 1.1.0",
+            "elm-community/array-extra": "2.6.0 <= v < 2.7.0",
+            "elm-community/list-extra": "8.7.0 <= v < 8.8.0",
+            "elm-community/maybe-extra": "5.3.0 <= v < 5.4.0",
+            "mdgriffith/elm-ui": "1.1.8 <= v < 1.2.0",
+            "micahhahn/elm-safe-recursion": "2.0.0 <= v < 2.1.0",
+            "miniBill/elm-fast-dict": "1.1.0 <= v < 1.2.0",
+            "miniBill/elm-rope": "1.0.0 <= v < 1.1.0",
+            "miniBill/elm-unicode": "1.1.0 <= v < 1.2.0",
+            "rtfeldman/elm-hex": "1.0.0 <= v < 1.1.0",
+            "stil4m/elm-syntax": "7.3.4 <= v < 7.4.0",
+            "the-sett/elm-pretty-printer": "3.1.0 <= v < 3.2.0",
+            "the-sett/elm-syntax-dsl": "6.0.2 <= v < 6.1.0",
+
+            "Chadtech/elm-bool-extra": "2.4.2 <= v < 2.5.0",
+            "elm/url": "1.0.0 <= v < 1.1.0",
+            "elm/virtual-dom": "1.0.3 <= v < 1.1.0",
+            "elm-community/basics-extra": "4.1.0 <= v < 4.2.0",
+            "myrho/elm-round": "1.0.5 <= v < 1.1.0",
+            "stil4m/structured-writer": "1.0.3 <= v < 1.1.0"
+
+    },
+    "test-dependencies": {
+
+            "elm-explorations/test": "2.2.0 <= v < 2.3.0",
+
+            "elm/bytes": "1.0.8 <= v < 1.1.0",
+            "elm/random": "1.0.0 <= v < 1.1.0"
+
+    }
+}
