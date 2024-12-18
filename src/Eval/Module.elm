@@ -22,8 +22,7 @@ import Syntax exposing (fakeNode)
 import Types exposing (CallTree, Env, Error(..), Value(..), FormulaModuleInfo)
 import Value exposing (unsupported)
 -- used to call createTestEnvValues
-import TypesXModel exposing (XModel)
-import XModel exposing (myXModel)
+import XModelSample
 import Types exposing (FormulaFunctionInfo, RecalcState(..))
 
 
@@ -249,7 +248,7 @@ buildInitialEnv curEnv file =
                 -- values can be of any type variant included in Value (see Types.elm)
                 -- here I add some test values to the environment
                 -- NB: the values can be used by the interpreter, even if they are not declared in the source code!
-                , values = XModel.createTestEnvValues
+                , values = XModelSample.createTestEnvValues
                 , envXModel = Nothing
                 , msgLine = ""
                 }

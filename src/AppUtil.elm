@@ -14,6 +14,38 @@ import Html.Attributes exposing (style)
 import Element exposing (Element , paragraph, text, el)
 import Element.Font as UiFont
 
+checkEndOfString : String -> String -> Bool
+checkEndOfString fullString textToMatch =
+    let
+        strLength = String.length fullString
+        matchLength = String.length textToMatch
+        lastNChars = String.dropLeft (strLength - matchLength) fullString
+    in
+    if matchLength > strLength then
+        False
+    else
+        lastNChars == textToMatch    
+    
+    
+getUppercaseLetter : Int -> String
+getUppercaseLetter asciiCode =
+    let
+        lettersCount = 26
+        quotient = asciiCode // lettersCount
+        remainder = modBy lettersCount asciiCode
+        letter = String.fromChar (Char.fromCode (Char.toCode 'A' + remainder))
+    in
+    String.repeat (quotient + 1) letter
+
+renameListItem :String -> String -> List String -> List String
+renameListItem oldName newName oldNames =
+    List.map (\old  -> 
+        if old == oldName then
+            newName
+        else
+            old
+    )   oldNames 
+
 debounce : Float -> msg -> Cmd msg
 debounce delay message =
     Process.sleep delay
@@ -41,10 +73,15 @@ logOnlyMessageCmd doLog message cmd =
 
 myLog : String -> a -> a
 myLog message value =
-    let
-        logOutput = message ++ ": " ++ Debug.toString value
-    in
-    Debug.log logOutput value
+    Debug.log message value
+
+logIf : Bool -> String -> a -> a
+logIf condition message value =
+    if condition then
+        Debug.log message value
+    else
+        value
+
 
 removeTrailingUnderscores : String -> String
 removeTrailingUnderscores str =

@@ -26,6 +26,7 @@ import Syntax exposing (fakeNode)
 import Types exposing (Eval, EvalErrorData, EvalResult, Value(..))
 import Value exposing (typeError)
 import XModel
+import TypesXModel
 
 
 type alias EvalFunction =
@@ -852,7 +853,7 @@ twoNumbers fInt fFloat implementation moduleName =
                     
                     calcDAr =                         
                             XModel.funcDataArrayPairAr adjLeftDAr adjRightDAr  fFloat
-                                |> Tuple.first |> Maybe.withDefault XModel.emptyDataArray
+                                |> Tuple.first |> Maybe.withDefault TypesXModel.emptyDataArray
 
                 in
                 EvalResult.succeed <| (XModel.dataArrayWithDimsToValue calcDAr adjHasExternalDataset)

@@ -2,7 +2,7 @@ module XModel exposing (..)
 
 -- new version of XArray
 
-import AppUtil
+import AppUtil exposing (myLog, logIf)
 import Array exposing (Array)
 import Array.Extra
 import FastDict as Dict exposing (Dict)
@@ -12,22 +12,14 @@ import List.Extra
 import Types exposing (Value(..))
 import TypesXModel exposing (..)
 import XParser exposing (XValue(..))
+import AppUtil exposing (myLog)
+
+
 
 
 
 -- helper expressions and functions to check DataArray contenttype
 
-
-emptyDataArray : DataArray
-emptyDataArray =
-    { ref = ""
-    , datasetRef = Nothing
-    , data = Array.empty
-    , text = Array.empty
-    , localDims = Nothing
-    , localDimRefs = Nothing
-    , pointedFormulas = Dict.empty
-    }
 
 
 isDataArrayText : DataArray -> Bool
@@ -49,26 +41,6 @@ isDataArrayEmpty : DataArray -> Bool
 isDataArrayEmpty dataArray =
     Array.isEmpty dataArray.data && Array.isEmpty dataArray.text
 
-
-emptyDataset : Dataset
-emptyDataset =
-    { ref = ""
-    , dimRefs = []
-    , dataArrayRefs = []
-    , dataArrays = Dict.empty
-    , formulas = ""
-    , defaultDataArrayRef = Nothing
-    }
-
-
-emptyXModel : XModel
-emptyXModel =
-    { modelRef = ""
-    , datasetRefs = []
-    , datasets = Dict.empty
-    , dims = Dict.empty
-    , datasetsToRecalc = []
-    }
 
 
 
@@ -100,190 +72,6 @@ dimsToCoordDimDict dims =
         Dict.empty
         dims
 
--- COORD INSERTING DELETING AND RENAMING
-newCoordName : DimRef -> Dims -> Coord
-newCoordName dimRef dims =
-    let
-        dimCoords =
-            Dict.get dimRef dims |> Maybe.withDefault Array.empty
-
-        coordName =
-            dimRef ++ String.fromInt (Array.length dimCoords + 1)
-    in
-    coordName
-appendCoord : Coord -> DimRef -> XModel -> XModel
-appendCoord coord dimRef curXModel =
-    let
-        maybeCoords =
-            Dict.get dimRef curXModel.dims
-
-        updatedDims =
-            case maybeCoords of
-                Just coords ->
-                    Dict.insert dimRef (Array.append coords (Array.fromList [ coord ])) curXModel.dims
-
-                Nothing ->
-                    Dict.insert dimRef (Array.fromList [ coord ]) curXModel.dims
-    in
-    updateXModelFromCoordChange updatedDims curXModel
-
-
-deleteCoord : DimRef -> Coord -> XModel -> XModel
-deleteCoord dimRef coord curXModel =
-    let
-        maybeCoords =
-            Dict.get dimRef curXModel.dims
-
-        updatedDims =
-            case maybeCoords of
-                Just coords ->
-                    Dict.insert dimRef (Array.Extra.removeWhen (\c -> c == coord) coords) curXModel.dims
-
-                Nothing ->
-                    curXModel.dims
-    in
-    updateXModelFromCoordChange updatedDims curXModel
-
-deleteCoordAt : Int ->  DimRef -> XModel -> XModel
-deleteCoordAt coordIndex dimRef curXModel =
-    let
-        maybeCoords =
-            Dict.get dimRef curXModel.dims
-
-        updatedDims =
-            case maybeCoords of
-                Just coords ->
-                    Dict.insert dimRef (Array.Extra.removeAt coordIndex coords) curXModel.dims
-
-                Nothing ->
-                    curXModel.dims
-    in
-    updateXModelFromCoordChange updatedDims curXModel
-
--- helper function handling the remapping of data in a DataArray to added or modifed coords in Dims, 
--- updatedDims have no new or deleted dims, only updated coords
-updateXModelFromCoordChange : Dims -> XModel -> XModel
-updateXModelFromCoordChange updatedDims curXModel =
-    let
-        -- loop on curXModel.dims, compare coords with updatedDims for the same key, if different add the key to the returned lis
-        changedDimRefs : List DimRef
-        changedDimRefs =
-            Dict.foldl
-                (\dimRef coords accList ->
-                    case Dict.get dimRef updatedDims of
-                        Just updatedCoords ->
-                            if coords /= updatedCoords then
-                                dimRef :: accList
-
-                            else
-                                accList
-
-                        Nothing ->
-                            accList
-                )
-                []
-                curXModel.dims
-        -- 
-        affectedDatasets =
-            List.filter (\datasetRef -> AppUtil.intersectBool changedDimRefs (Dict.get datasetRef curXModel.datasets 
-                |> Maybe.withDefault emptyDataset).dimRefs) curXModel.datasetRefs
-
-        updateDataset curDataset =
-            let
-                updatedDataArrays =
-                    Dict.map (\_ dataArray -> 
-                        let
-                            resultDataArray =
-                                remapDataInDataArrayToNewDims curXModel (Ok dataArray) updatedDims 
-                        in
-                        case resultDataArray of
-                            Ok dataArrayOk ->
-                                dataArrayOk
-
-                            Err _ ->
-                                dataArray
-                    ) 
-                    curDataset.dataArrays
-            in
-            { curDataset | dataArrays = updatedDataArrays }
-
-        updatedDatasets =
-            List.foldl
-                (\datasetRef acc ->
-                    Dict.update datasetRef (Maybe.map updateDataset) acc
-                )
-                curXModel.datasets
-                affectedDatasets
-        datasetRefsToRecalc =
-            List.append curXModel.datasetsToRecalc affectedDatasets
-    in
-    { curXModel | dims = updatedDims, datasets = updatedDatasets , datasetsToRecalc = datasetRefsToRecalc }
-newCoord : DimRef -> Coord -> XModel -> XModel
-newCoord dimRef curCoord curXModel =
-    let
-        coord =
-            newCoordName dimRef curXModel.dims
-        updatedDims = 
-            insertCoordAfter coord dimRef curCoord curXModel.dims
-    in
-    updateXModelFromCoordChange updatedDims curXModel
-    
-insertCoordAt : Coord -> DimRef -> Int -> Dims -> Dims
-insertCoordAt coord dimRef coordIndex dims =
-    let
-        maybeCoords =
-            Dict.get dimRef dims
-    in
-    case maybeCoords of
-        Just coords ->
-            Dict.insert dimRef (Array.Extra.insertAt coordIndex coord coords) dims
-
-        Nothing ->
-            dims
-
-insertCoordBefore : Coord -> DimRef -> Coord -> Dims -> Dims
-insertCoordBefore coord dimRef curCoord dims =
-    let
-        maybeCoords =
-            Dict.get dimRef dims
-    in
-    case maybeCoords of
-        Just coords ->
-            let
-                coordIndex =
-                    elemIndex curCoord coords |> Maybe.withDefault -1
-            in
-            if coordIndex >= 0 then
-                Dict.insert dimRef (Array.Extra.insertAt coordIndex coord coords) dims
-
-            else
-                dims
-
-        Nothing ->
-            dims
-
-insertCoordAfter : Coord -> DimRef -> Coord -> Dims -> Dims
-insertCoordAfter coord dimRef curCoord dims =
-    let
-        maybeCoords =
-            Dict.get dimRef dims
-    in
-    case maybeCoords of
-        Just coords ->
-            let
-                coordIndex =
-                    elemIndex curCoord coords |> Maybe.withDefault -1
-            in
-            if coordIndex >= 0 then
-                Dict.insert dimRef (Array.Extra.insertAt (coordIndex+1) coord coords) dims
-
-            else
-                dims
-
-        Nothing ->
-            dims
-
-
 -- helper functions created using Dict.get or Dict.insert in XArrayEngine raises error
 
 
@@ -306,45 +94,6 @@ getDataArrayByRef : DataArrayRef -> DataArrays -> Maybe DataArray
 getDataArrayByRef ref dataArrays =
     Dict.get ref dataArrays
 
-renameDataArrayToXModel : XModel -> DatasetRef -> DataArrayRef -> DataArrayRef -> XModel
-renameDataArrayToXModel xModel datasetRef oldRef newRef =
-    let
-        maybeDataset =
-            getDatasetByRef datasetRef xModel.datasets
-    in
-    case maybeDataset of
-        Just dataset ->
-            let
-                maybeDataArray =
-                    getDataArrayByRef oldRef dataset.dataArrays
-            in
-            case maybeDataArray of
-                Just dataArray ->
-                    let
-                        updatedDataArrays =
-                            Dict.insert newRef { dataArray | ref = newRef } 
-                                (Dict.remove oldRef dataset.dataArrays)
-                        updatedDataArrayRefs =
-                            List.map (\ref -> if ref == oldRef then newRef else ref) dataset.dataArrayRefs
-
-                        updatedDataset =
-                            { dataset 
-                                | dataArrays = updatedDataArrays 
-                                , dataArrayRefs = updatedDataArrayRefs
-                                }
-
-                        updatedDatasets =
-                            Dict.insert datasetRef updatedDataset xModel.datasets
-                    in
-                    -- Debug.log ("updatedDataArrayRefs: " ++ Debug.toString updatedDataArrayRefs)
-                    { xModel | datasets = updatedDatasets }
-
-
-                Nothing ->
-                    xModel
-
-        Nothing ->
-            xModel
 
 
 getDataArrayWithDimsFromXModel : XModel -> DatasetRef -> DataArrayRef -> Maybe DataArray
@@ -447,7 +196,7 @@ coordsToDimCoordSpecs dims coords =
             List.map (\coord -> Dict.get coord coordDimDict |> Maybe.withDefault "") coords
     in
     -- Debug.log ("coordsToDimCoordSpecs: " ++ Debug.toString dims)
-    List.map2 (\coord dimRef -> ( dimRef, SingleCoord coord )) coords dimRefsForCoords
+    List.map2 (\coord dimRef -> ( dimRef, CoordSingle coord )) coords dimRefsForCoords
 
 
 
@@ -538,7 +287,7 @@ getDataArrayByDVarIndex : Dataset -> Int -> DataArray
 getDataArrayByDVarIndex dataset dVarIndex =
     let
         dataArrayRef =
-            getAt dVarIndex dataset.dataArrayRefs
+            getAtList dVarIndex dataset.dataArrayRefs
     in
     case dataArrayRef of
         Just dArRef ->
@@ -832,9 +581,9 @@ getDVarDimCoords dataset =
 -- needs Dataset arg to get the dVarDim coords
 
 
-dimVariantCoords : Dims -> Dataset -> DimVariant -> Array Coord
-dimVariantCoords dims dataset dimVariantRef =
-    case dimVariantRef of
+dimOrDArCoords : Dims -> Dataset -> DimOrDAr -> Array Coord
+dimOrDArCoords dims dataset dimOrDArRef =
+    case dimOrDArRef of
         CategDimRef dim ->
             Dict.get dim dims |> Maybe.withDefault Array.empty
 
@@ -846,9 +595,9 @@ dimVariantCoords dims dataset dimVariantRef =
 -- returns the name of a categDim or a dVarDim
 
 
-dimVariantName : DimVariant -> String
-dimVariantName dimVariant =
-    case dimVariant of
+dimOrDArName : DimOrDAr -> String
+dimOrDArName dimOrDAr =
+    case dimOrDAr of
         CategDimRef dimRef ->
             dimRef
 
@@ -856,8 +605,8 @@ dimVariantName dimVariant =
             dVarRef
 
 
-dimVariantRefByDimName : Dataset -> String -> DimVariant
-dimVariantRefByDimName dataset dimName =
+dimOrDArRefByDimName : Dataset -> String -> DimOrDAr
+dimOrDArRefByDimName dataset dimName =
     let
         maybeDim : Maybe DimRef
         maybeDim =
@@ -873,16 +622,16 @@ dimVariantRefByDimName dataset dimName =
 
 
 
--- returns a list of dim coords sizes for a given list of dimVariantRefs in a Dataset, including dVarDim
+-- returns a list of dim coords sizes for a given list of dimOrDArRefs in a Dataset, including dVarDim
 
 
-shape : Dims -> Dataset -> List DimVariant -> List Int
+shape : Dims -> Dataset -> List DimOrDAr -> List Int
 shape dims dataset dimVarRefs =
     List.map
         (\dimVarRef ->
             let
                 dimVarCoords =
-                    dimVariantCoords dims dataset dimVarRef
+                    dimOrDArCoords dims dataset dimVarRef
             in
             Array.length dimVarCoords
         )
@@ -937,7 +686,7 @@ coordIndexByDimRefCoordTuples dims ( dimRef, coord ) =
         coords =
             Dict.get dimRef dims |> Maybe.withDefault Array.empty
     in
-    elemIndex coord coords
+    elemIndexAr coord coords
 
 
 datasetForDataArray : XModel -> DataArray -> Maybe Dataset
@@ -1051,7 +800,7 @@ cartesianProductPosVecs maybeLists =
 -- used by iloc
 
 
-calcFlatIndices : Dims -> Dataset -> Maybe (Array PosVec) -> List DimVariant -> Maybe (Array FlatIndex)
+calcFlatIndices : Dims -> Dataset -> Maybe (Array PosVec) -> List DimOrDAr -> Maybe (Array FlatIndex)
 calcFlatIndices dims dataset maybePosVecs dimRefs =
     case maybePosVecs of
         -- non controllo che le dimensioni di posvec e strides siano uguali
@@ -1080,7 +829,7 @@ calcFlatIndices dims dataset maybePosVecs dimRefs =
 
 
 
--- for a given list of DimVariants, with strides precalculated,
+-- for a given list of DimOrDAr, with strides precalculated,
 -- returns the index in the flat array of the data
 -- for its posvec, i.e. positions of the coords in the respective DimVariant
 
@@ -1173,8 +922,8 @@ calcFlatIndicesFast dims dimRefs posVecs =
 -- https://stackoverflow.com/questions/12429492/how-to-convert-a-monodimensional-index-to-corresponding-indices-in-a-multidimens
 
 
-itemPosVec : FlatIndex -> List Size -> Maybe PosVec
-itemPosVec flatIndex sizes =
+flatIndexToPosVec : FlatIndex -> List Size -> Maybe PosVec
+flatIndexToPosVec flatIndex sizes =
     let
         strides =
             calculateStrides sizes
@@ -1242,14 +991,14 @@ itemCoordVecsForDims dims dimRefs =
 -- helper function to convert an IndexSpecifier to a list of filtered indices
 
 
-expandIndexSpecifier : Dims -> Dataset -> DimVariant -> IndexSpecifier -> Array CoordIndex
+expandIndexSpecifier : Dims -> Dataset -> DimOrDAr -> IndexSpecifier -> Array CoordIndex
 expandIndexSpecifier dims dataset dimVarRef specifier =
     let
         dimVarCoords =
-            dimVariantCoords dims dataset dimVarRef
+            dimOrDArCoords dims dataset dimVarRef
     in
     case specifier of
-        SingleIndex idx ->
+        IndexSingle idx ->
             Array.fromList [ idx ]
 
         IndexRange ( idxStart, idxEnd ) ->
@@ -1276,7 +1025,7 @@ expandIndexSpecifierAr dataArray dimRef specifier =
             Dict.get dimRef dims |> Maybe.withDefault Array.empty
     in
     case specifier of
-        SingleIndex idx ->
+        IndexSingle idx ->
             Array.fromList [ idx ]
 
         IndexRange ( idxStart, idxEnd ) ->
@@ -1295,7 +1044,7 @@ expandIndexSpecifierAr dataArray dimRef specifier =
 
 toSingleIdx : DimRef -> CoordIndex -> ( DimRef, IndexSpecifier )
 toSingleIdx dimRef idx =
-    ( dimRef, SingleIndex idx )
+    ( dimRef, IndexSingle idx )
 
 
 toIdxList : DimRef -> Array CoordIndex -> ( DimRef, IndexSpecifier )
@@ -1397,8 +1146,8 @@ pivotDimRefForDims dims1 dims2 =
     pivotDimRef
 
 
-dimVariantRefsForDataset : Dataset -> Bool -> List DimVariant
-dimVariantRefsForDataset dataset withDVar =
+dimOrDArRefsForDataset : Dataset -> Bool -> List DimOrDAr
+dimOrDArRefsForDataset dataset withDVar =
     let
         dimRefs =
             dataset.dimRefs
@@ -1424,11 +1173,11 @@ dimVariantRefsForDataset dataset withDVar =
 -- why use DimVariantRef and not DimRef? => to handle DVarDimRef in XView
 
 
-iloc : Dims -> Dataset -> DataArray -> List ( DimVariant, IndexSpecifier ) -> Maybe DataArray
+iloc : Dims -> Dataset -> DataArray -> List ( DimOrDAr, IndexSpecifier ) -> Maybe DataArray
 iloc dims dataset dataArray dimRefIndicesTuples =
     let
         -- loop on dataset dimRefs ++ dVar and complete dimRefIndicesTuples with IndexNone for missing dims
-        completeDimRefIndicesTuples : List ( DimVariant, IndexSpecifier )
+        completeDimRefIndicesTuples : List ( DimOrDAr, IndexSpecifier )
         completeDimRefIndicesTuples =
             List.map
                 (\dimVarRef ->
@@ -1445,19 +1194,19 @@ iloc dims dataset dataArray dimRefIndicesTuples =
                     -- Debug.log ("iloc filteredTuple: " ++ Debug.toString filteredTuple)
                     ( dimVarRef, foundSpecifier )
                 )
-                (dimVariantRefsForDataset dataset False)
+                (dimOrDArRefsForDataset dataset False)
 
         -- false to exclude DVarDimRef
         localExpandSpecifier dimRefArg dimIndexSpecifier =
             expandIndexSpecifier dims dataset dimRefArg dimIndexSpecifier
 
-        dimVariantRefs : List DimVariant
+        dimVariantRefs : List DimOrDAr
         dimVariantRefs =
             List.map Tuple.first completeDimRefIndicesTuples
 
         dimRefs : List DimRef
         dimRefs =
-            List.map (Tuple.first >> dimVariantToDimVariantRef) completeDimRefIndicesTuples
+            List.map (Tuple.first >> dimVariantToDimRefString) completeDimRefIndicesTuples
 
         expandedIndices =
             List.map
@@ -1606,7 +1355,7 @@ strToCoordSpecifier str =
             coord =
                 String.dropLeft 8 str |> String.trim
         in
-        SingleCoord coord
+        CoordSingle coord
 
     else if String.startsWith "range::" str then
         let
@@ -1635,29 +1384,29 @@ strToCoordSpecifier str =
 -- helper functions to construct (dim, LocSpecifier) tuples passed to loc
 
 
-toSingleCoord : DimRef -> Coord -> ( DimVariant, CoordSpecifier )
+toSingleCoord : DimRef -> Coord -> ( DimOrDAr, CoordSpecifier )
 toSingleCoord dimRef coord =
-    ( CategDimRef dimRef, SingleCoord coord )
+    ( CategDimRef dimRef, CoordSingle coord )
 
 
-toCoordList : DimRef -> Array Coord -> ( DimVariant, CoordSpecifier )
+toCoordList : DimRef -> Array Coord -> ( DimOrDAr, CoordSpecifier )
 toCoordList dimRef coordArray =
     ( CategDimRef dimRef, CoordList coordArray )
 
 
-toCoordRange : DimRef -> Coord -> Coord -> ( DimVariant, CoordSpecifier )
+toCoordRange : DimRef -> Coord -> Coord -> ( DimOrDAr, CoordSpecifier )
 toCoordRange dimRef coordStart coordEnd =
     ( CategDimRef dimRef, CoordRange ( coordStart, coordEnd ) )
 
 
-toCoordNone : DimRef -> ( DimVariant, CoordSpecifier )
+toCoordNone : DimRef -> ( DimOrDAr, CoordSpecifier )
 toCoordNone dimRef =
     ( CategDimRef dimRef, CoordNone )
 
 
 toSingleCoordAr : DimRef -> Coord -> ( DimRef, CoordSpecifier )
 toSingleCoordAr dimRef coord =
-    ( dimRef, SingleCoord coord )
+    ( dimRef, CoordSingle coord )
 
 
 toCoordListAr : DimRef -> Array Coord -> ( DimRef, CoordSpecifier )
@@ -1680,7 +1429,7 @@ toCoordNoneAr dimRef =
 -- chatgpt implementation wraps iloc, with wrong coords returns all coords like CoordNone
 
 
-loc : Dims -> Dataset -> DataArray -> List ( DimVariant, CoordSpecifier ) -> Maybe DataArray
+loc : Dims -> Dataset -> DataArray -> List ( DimOrDAr, CoordSpecifier ) -> Maybe DataArray
 loc dims dataset dataArray dimRefCoordsTuples =
     -- Convert dimCoordsTuples to IndexSpecifiers and call iloc
     let
@@ -1734,7 +1483,7 @@ getDataArrayByLoc xModel datasetRef dataArrayRef dimRefCoordsStrPatterns =
 -- takes a string `dimRef||coordSpecifier` and returns a tuple (dimRef, CoordSpecifier)
 
 
-strToDimRefCoordsTuple : String -> ( DimVariant, CoordSpecifier )
+strToDimRefCoordsTuple : String -> ( DimOrDAr, CoordSpecifier )
 strToDimRefCoordsTuple str =
     let
         ( dimVariantRef, coordPart ) =
@@ -1776,20 +1525,20 @@ strToDimRefCoordsTuple str =
                 in
                 case Array.length coords of
                     1 ->
-                        ( CategDimRef dimVariantRef, SingleCoord (Array.get 0 coords |> Maybe.withDefault "") )
+                        ( CategDimRef dimVariantRef, CoordSingle (Array.get 0 coords |> Maybe.withDefault "") )
 
                     _ ->
                         ( CategDimRef dimVariantRef, CoordList coords )
 
 
-strToDimRefCoordsTupleVerbose : String -> ( DimVariant, CoordSpecifier )
+strToDimRefCoordsTupleVerbose : String -> ( DimOrDAr, CoordSpecifier )
 strToDimRefCoordsTupleVerbose str =
     let
         -- Split the string into DimVariantRef and the specifier part.
         parts =
             String.split "||" str
 
-        dimVariantRef : DimVariant
+        dimVariantRef : DimOrDAr
         dimVariantRef =
             case List.head parts of
                 Just ref ->
@@ -1818,11 +1567,11 @@ strToDimRefCoordsTupleVerbose str =
 -- returns Dict from Coord to CoordIndex
 
 
-coordDict : Dims -> Dataset -> DimVariant -> CoordDict
+coordDict : Dims -> Dataset -> DimOrDAr -> CoordDict
 coordDict dims dataset dimVarRef =
     let
         coordsforDim =
-            dimVariantCoords dims dataset dimVarRef
+            dimOrDArCoords dims dataset dimVarRef
     in
     Dict.fromList
         (Array.toList coordsforDim
@@ -1852,11 +1601,11 @@ coordToIndex dimVarDict coord =
 -- Convert coordSpecifier to IndexSpecifier
 
 
-convertSpecifier : Dims -> Dataset -> DimVariant -> CoordSpecifier -> Maybe IndexSpecifier
+convertSpecifier : Dims -> Dataset -> DimOrDAr -> CoordSpecifier -> Maybe IndexSpecifier
 convertSpecifier dims dataset dimVar specifier =
     let
         coordsforDim =
-            dimVariantCoords dims dataset dimVar
+            dimOrDArCoords dims dataset dimVar
 
         coordDictLocal =
             Dict.fromList
@@ -1865,8 +1614,8 @@ convertSpecifier dims dataset dimVar specifier =
                 )
     in
     case specifier of
-        SingleCoord coord ->
-            Dict.get coord coordDictLocal |> Maybe.map SingleIndex
+        CoordSingle coord ->
+            Dict.get coord coordDictLocal |> Maybe.map IndexSingle
 
         CoordRange ( startCoord, endCoord ) ->
             case ( Dict.get startCoord coordDictLocal, Dict.get endCoord coordDictLocal ) of
@@ -1911,8 +1660,8 @@ convertSpecifierAr dataArray dim specifier =
                 )
     in
     case specifier of
-        SingleCoord coord ->
-            Dict.get coord coordDictLocal |> Maybe.map SingleIndex
+        CoordSingle coord ->
+            Dict.get coord coordDictLocal |> Maybe.map IndexSingle
 
         CoordRange ( startCoord, endCoord ) ->
             case ( Dict.get startCoord coordDictLocal, Dict.get endCoord coordDictLocal ) of
@@ -1962,18 +1711,18 @@ updateDataArraysByIndices dataArrays indices =
         dataArrays
 
 
-findDVarDimIndex : Array DimVariant -> Maybe Int
+findDVarDimIndex : Array DimOrDAr -> Maybe Int
 findDVarDimIndex specifiers =
-    findIndex (\dimVariant -> isDVarDim dimVariant) specifiers
+    findIndex (\dimOrDAr -> isDVarDim dimOrDAr) specifiers
 
 
 
 -- findIndex redefined here with elemIndex
 
 
-isDVarDim : DimVariant -> Bool
-isDVarDim dimVariantRef =
-    case dimVariantRef of
+isDVarDim : DimOrDAr -> Bool
+isDVarDim dimOrDAr =
+    case dimOrDAr of
         DVarDimRef _ ->
             True
 
@@ -1989,7 +1738,7 @@ getStrDatumFromDatasetForFlatIndexDVarIndex : Dataset -> FlatIndex -> Int -> Str
 getStrDatumFromDatasetForFlatIndexDVarIndex dataset flatIndex dVarIndex =
     let
         dataArrayRef =
-            getAt dVarIndex dataset.dataArrayRefs
+            getAtList dVarIndex dataset.dataArrayRefs
 
         retDatum =
             case dataArrayRef of
@@ -2017,7 +1766,7 @@ getXValueDatumFromDatasetForFlatIndexDVarIndex : Dataset -> FlatIndex -> Int -> 
 getXValueDatumFromDatasetForFlatIndexDVarIndex dataset flatIndex dVarIndex =
     let
         dataArrayRef =
-            getAt dVarIndex dataset.dataArrayRefs
+            getAtList dVarIndex dataset.dataArrayRefs
     in
     case dataArrayRef of
         Just dArRef ->
@@ -2076,7 +1825,7 @@ setDatumFromStringToDataset dataset flatIndex dVarIndex datum =
 
         -- Update the data array within the dataset, if it exists
         dataArrayRef =
-            getAt dVarIndex dataset.dataArrayRefs
+            getAtList dVarIndex dataset.dataArrayRefs
 
         updatedDataArrays =
             case dataArrayRef of
@@ -2112,7 +1861,7 @@ setXValueDatumToDataset dataset flatIndex dVarIndex datum =
 
         -- Update the data array within the dataset, if it exists
         dataArrayRef =
-            getAt dVarIndex dataset.dataArrayRefs
+            getAtList dVarIndex dataset.dataArrayRefs
 
         updatedDataArrays =
             case dataArrayRef of
@@ -2205,29 +1954,6 @@ getDataFromArrayForIndices : Array FlatIndex -> Array a -> a -> Array a
 getDataFromArrayForIndices indices dataArray defaultValue =
     Array.map (\i -> Array.get i dataArray |> Maybe.withDefault defaultValue) indices
 
--- coord and array name updates
-
-updateDimCoordValue : Dims -> DimVariant -> Coord -> XValue -> Dims
-updateDimCoordValue dims dimVariant oldCoordValue newCoordValue =
-    case ( dimVariant , newCoordValue )of
-        ( CategDimRef dimRef , XString newStringValue )-> 
-            Dict.update dimRef
-                (Maybe.map (\coordsArray ->
-                    let
-                        updatedCoords =
-                            Array.indexedMap (\index existingCoord ->
-                                if existingCoord == oldCoordValue then
-                                    newStringValue
-                                else
-                                    existingCoord
-                            ) coordsArray
-                    in
-                    updatedCoords
-                ))
-                dims
-
-        _ -> -- no update for DVarDimRef
-            dims
 
 updateDataArrayName : Dataset -> DataArrayRef -> String -> Dataset
 updateDataArrayName dataset dataArrayRef newName =
@@ -2249,220 +1975,743 @@ updateDataArrayName dataset dataArrayRef newName =
     { dataset | dataArrays = updatedDataArrays }
 
 
-
-
--------------------------------------------------------------------------------
---- DUPLICATED GENERAL FUNCTIONS TO AVOID MODULE ERR IN THE INTERPRETER
--- copied from List.Extra because elm-interpreter not recognizing them at runtime
-
-
-{-| Returns `Just` the element at the given index in the list,
-or `Nothing` if the index is out of range.
--}
-getAt : Int -> List a -> Maybe a
-getAt idx xs =
-    if idx < 0 then
-        Nothing
-
-    else
-        List.head <| List.drop idx xs
-
-
-elemIndexList : a -> List a -> Maybe Int
-elemIndexList x =
-    findIndexList ((==) x)
-
-
-findIndexList : (a -> Bool) -> List a -> Maybe Int
-findIndexList =
-    findIndexHelpList 0
-
-
-findIndexHelpList : Int -> (a -> Bool) -> List a -> Maybe Int
-findIndexHelpList index predicate list =
-    case list of
-        [] ->
-            Nothing
-
-        x :: xs ->
-            if predicate x then
-                Just index
-
-            else
-                findIndexHelpList (index + 1) predicate xs
-
-
-elemIndex : a -> Array a -> Maybe Int
-elemIndex x arr =
-    findIndex ((==) x) arr
-
-
-findIndex : (a -> Bool) -> Array a -> Maybe Int
-findIndex predicate arr =
-    findIndexHelp 0 predicate arr
-
-
-findIndexHelp : Int -> (a -> Bool) -> Array a -> Maybe Int
-findIndexHelp index predicate arr =
-    if index >= Array.length arr then
-        Nothing
-
-    else
-        case Array.get index arr of
-            Just x ->
-                if predicate x then
-                    Just index
-
-                else
-                    findIndexHelp (index + 1) predicate arr
-
-            Nothing ->
-                Nothing
-
-
-cartesianProduct : List (List a) -> List (List a)
-cartesianProduct ll =
-    case ll of
-        [] ->
-            [ [] ]
-
-        xs :: xss ->
-            lift2 (::) xs (cartesianProduct xss)
-
-
-lift2 : (a -> b -> c) -> List a -> List b -> List c
-lift2 f la lb =
-    la |> andThen (\a -> lb |> andThen (\b -> [ f a b ]))
-
-
-andThen : (a -> List b) -> List a -> List b
-andThen =
-    List.concatMap
-
-
-
--- only handles unpacking of List to/from Arrays
-
-
-cartesianProductListOfArToArOfList : List (Array a) -> Array (List a)
-cartesianProductListOfArToArOfList listOfArrays =
-    listOfArrays
-        |> List.map Array.toList
-        |> cartesianProduct
-        |> Array.fromList
-
-
-scanl : (a -> b -> b) -> b -> List a -> List b
-scanl f b xs =
+-- COORD , DIM AND DATA ARRAY INSERTING DELETING AND RENAMING
+newCoordName : DimRef -> Dims -> Coord
+newCoordName dimRef dims =
     let
-        scan1 x accAcc =
-            case accAcc of
-                acc :: _ ->
-                    f x acc :: accAcc
+        dimCoords =
+            Dict.get dimRef dims |> Maybe.withDefault Array.empty
 
-                [] ->
-                    []
-
-        -- impossible
+        coordName =
+            dimRef ++ String.fromInt (Array.length dimCoords + 1)
     in
-    List.reverse (List.foldl scan1 [ b ] xs)
+    coordName
 
-
-zip : List a -> List b -> List ( a, b )
-zip =
-    List.map2 Tuple.pair
-
-
-updateAt : Int -> (a -> a) -> List a -> List a
-updateAt index fn list =
-    if index < 0 then
-        list
-
-    else
-        let
-            tail : List a
-            tail =
-                List.drop index list
-        in
-        case tail of
-            x :: xs ->
-                List.take index list ++ fn x :: xs
-
-            [] ->
-                list
-
-
-
--- MY GENERAL LIST OR ARRAY FUNCTIONS
-
-
-extractElements : List a -> List Int -> List a
-extractElements arr indices =
-    indices
-        |> List.map (\index -> getAt index arr)
-        |> List.filterMap identity
-
-
-
--- duplicates getFromArrayForIndices that has default value assignment
-
-
-extractElementsArray : Array a -> Array Int -> Array a
-extractElementsArray arr indices =
-    indices
-        |> Array.map (\index -> Array.get index arr)
-        |> Array.Extra.filterMap identity
-
-
-updateElementsArray : Array a -> Array a -> Array Int -> Array a
-updateElementsArray arrayToUpdate updatedValues updatedIndices =
+newDataArrayName : Dataset -> Coord
+newDataArrayName curDataset =
     let
-        updateAtIndex ( index, value ) arr =
-            if index >= 0 && index < Array.length arr then
-                Array.set index value arr
+        dataArrayRefs =
+            curDataset.dataArrayRefs
 
-            else
-                arr
-
-        tuples =
-            Array.Extra.zip updatedIndices updatedValues
+        coordName =
+            dVarIdentifier ++ String.fromInt (List.length dataArrayRefs + 1)
     in
-    Array.foldl updateAtIndex arrayToUpdate tuples
+    coordName
+appendCoord : Coord -> DimRef -> HeaderPath -> XModel -> XModel
+appendCoord coord dimRef curHeaderPath curXModel =
+    let
+        maybeCoords =
+            Dict.get dimRef curXModel.dims
 
-
-
--- equivalent to haskell List.sequence, unwraps a list of Maybes to a Maybe List
--- validation is done on the resulting Maybe List that is Nothing if any of the elements is Nothing
-
-
-listSequence : List (Maybe a) -> Maybe (List a)
-listSequence maybes =
-    List.foldr
-        (\maybe acc ->
-            case maybe of
-                Just value ->
-                    Maybe.map (\list -> value :: list) acc
+        updatedDims =
+            case maybeCoords of
+                Just coords ->
+                    Dict.insert dimRef (Array.append coords (Array.fromList [ coord ])) curXModel.dims
 
                 Nothing ->
-                    Nothing
-        )
-        (Just [])
-        maybes
+                    Dict.insert dimRef (Array.fromList [ coord ]) curXModel.dims
+        updatedHeaderPath =
+            updateHeaderPath curHeaderPath coord
+    in
+    updateXModelFromCoordChange updatedDims InsertRemoveCoord updatedHeaderPath curXModel
+
+updateHeaderPath : HeaderPath -> Coord -> HeaderPath
+updateHeaderPath curHeaderPath coord =
+    case List.reverse curHeaderPath of
+        curCell::rest ->
+            (Tuple.first curCell, coord) :: rest |> List.reverse
+
+        _ ->
+            curHeaderPath
+
+removeCoord : DimRef -> Coord -> HeaderPath -> XModel -> XModel
+removeCoord dimRef coord curHeaderPath curXModel =
+    let
+        maybeCoords =
+            Dict.get dimRef curXModel.dims
+
+        (updatedDims , returnedHeaderPath) =
+            case maybeCoords of
+                Just coords ->
+                    if (Array.length coords) > 1 then
+                        let
+                            coordIndex =
+                                elemIndexAr coord coords |> Maybe.withDefault -1
+                            coordIndexToFocus =
+                                if coordIndex + 1 == Array.length coords then
+                                    coordIndex - 1
+                                else
+                                    coordIndex + 1
+                            coordToFocus =
+                                Array.get coordIndexToFocus coords |> Maybe.withDefault "errorGettingCoord"
+                            updatedHeaderPath =
+                                       updateHeaderPath curHeaderPath coordToFocus
+                        in
+                        ( Dict.insert dimRef (Array.Extra.removeWhen (\c -> c == coord) coords) curXModel.dims
+                        , updatedHeaderPath
+                        )
+                    else
+                        ( curXModel.dims , curHeaderPath )
+                Nothing ->
+                    ( curXModel.dims , curHeaderPath )
+    in
+    updateXModelFromCoordChange updatedDims InsertRemoveCoord returnedHeaderPath curXModel
+
+removeCoordAt : Int ->  DimRef -> HeaderPath -> XModel -> XModel
+removeCoordAt coordIndex dimRef curHeaderPath curXModel =
+    let
+        maybeCoords =
+            Dict.get dimRef curXModel.dims
+
+        (updatedDims , returnedHeaderPath) =
+            case maybeCoords of
+                Just coords ->
+                    if (Array.length coords) > 1 then
+                        let
+                            coordIndexToFocus =
+                                if coordIndex + 1 == Array.length coords then
+                                    coordIndex - 1
+                                else
+                                    coordIndex + 1
+                            coordToFocus =
+                                Array.get coordIndexToFocus coords |> Maybe.withDefault "errorGettingCoord"
+                            updatedHeaderPath =
+                                       updateHeaderPath curHeaderPath coordToFocus
+                        in
+                        ( Dict.insert dimRef (Array.Extra.removeAt coordIndex coords) curXModel.dims
+                        , updatedHeaderPath
+                        )
+                    else
+                        ( curXModel.dims , curHeaderPath )
+                    
+
+                Nothing ->
+                    ( curXModel.dims , curHeaderPath )
+    in
+    updateXModelFromCoordChange updatedDims InsertRemoveCoord returnedHeaderPath curXModel
 
 
-arraySequence : Array (Maybe a) -> Maybe (Array a)
-arraySequence maybeArray =
-    Array.foldr
-        (\maybeElem acc ->
-            case ( maybeElem, acc ) of
-                ( Just elem, Just elems ) ->
-                    Just (Array.push elem elems)
+-- helper function handling the remapping of data in a DataArray to added or modifed coords in Dims, 
+-- updatedDims have no new or deleted dims, only updated coords
+updateXModelFromCoordChange : Dims -> CoordChange -> HeaderPath -> XModel -> XModel
+updateXModelFromCoordChange updatedDims changeType updatedHeaderPath curXModel =
+    let
+        -- loop on curXModel.dims, compare coords with updatedDims for the same key, if different add the key to the returned lis
+        changedDimRefs : List DimRef
+        changedDimRefs =
+            Dict.foldl
+                (\dimRef coords accList ->
+                    case Dict.get dimRef updatedDims of
+                        Just updatedCoords ->
+                            if coords /= updatedCoords then
+                                dimRef :: accList
 
-                _ ->
-                    Nothing
-        )
-        (Just Array.empty)
-        (Array.Extra.reverse maybeArray)
+                            else
+                                accList
+
+                        Nothing ->
+                            accList
+                )
+                []
+                curXModel.dims
+        
+        -- 
+        affectedDatasets =
+            List.filter (\datasetRef -> AppUtil.intersectBool changedDimRefs (Dict.get datasetRef curXModel.datasets 
+                |> Maybe.withDefault emptyDataset).dimRefs) curXModel.datasetRefs
+
+        updateDataset curDataset =
+            let
+                updatedDataArrays =
+                    case changeType of
+                        RenameCoord ->
+                            curDataset.dataArrays
+
+                        InsertRemoveCoord ->
+                            Dict.map (\_ dataArray -> 
+                                let
+                                    resultDataArray =
+                                        myLog "resultDataArray remapped"
+                                        (remapDataInDataArrayToNewDims curXModel (Ok dataArray) (Nothing , updatedDims ))
+                                in
+                                case resultDataArray of
+                                    Ok dataArrayOk ->
+                                        dataArrayOk
+
+                                    Err _ ->
+                                        dataArray
+                            ) 
+                            curDataset.dataArrays
+            in
+            { curDataset | dataArrays = updatedDataArrays }
+
+        updatedDatasets =
+            List.foldl
+                (\datasetRef acc ->
+                    Dict.update datasetRef (Maybe.map updateDataset) acc
+                )
+                curXModel.datasets
+                affectedDatasets
+        datasetRefsToRecalc =
+            List.append curXModel.datasetsToRecalc affectedDatasets
+        -- no dimChangesToProcess
+    in
+    { curXModel 
+        | dims = updatedDims
+        , datasets = updatedDatasets
+        , datasetsToRecalc = datasetRefsToRecalc 
+        , updatedHeaderPath = Just updatedHeaderPath
+    }
+newCoord : DimRef -> Coord -> HeaderPath -> XModel -> XModel
+newCoord dimRef curCoord headerPath curXModel =
+    let
+        coord =
+            newCoordName dimRef curXModel.dims
+        updatedDims = 
+            insertCoordAfter coord dimRef curCoord curXModel.dims
+        updatedHeaderPath =
+            updateHeaderPath headerPath coord
+    in
+    updateXModelFromCoordChange updatedDims InsertRemoveCoord updatedHeaderPath curXModel
+
+newDataArray : DatasetRef -> DataArrayRef -> HeaderPath -> XModel -> XModel
+newDataArray curDatasetRef curDataArrayRef headerPath curXModel =
+    let -- default creates a dataArray with data not text
+        curDataset = -- no cross dataset updates
+            Dict.get curDatasetRef curXModel.datasets |> Maybe.withDefault emptyDataset
+        dataArrayRef =
+            newDataArrayName curDataset
+        curDataArray =
+            getDataArrayByRef curDataArrayRef curDataset.dataArrays 
+                |> Maybe.withDefault emptyDataArray
+        dataLength =
+            if isDataArrayData curDataArray then
+                Array.length curDataArray.data
+            else
+                Array.length curDataArray.text
+        updatedDataArray =
+            { emptyDataArray
+                | ref = dataArrayRef
+                , datasetRef = Just curDatasetRef
+                , data = Array.repeat dataLength (0/0)
+                , text = Array.empty
+            }
+        updatedDataArrayRefs = 
+            List.append curDataset.dataArrayRefs [dataArrayRef]
+        updatedHeaderPath =
+            updateHeaderPath headerPath dataArrayRef
+        updatedDataArrays =
+            Dict.insert dataArrayRef updatedDataArray curDataset.dataArrays
+        updatedDataset =
+            { curDataset | dataArrayRefs = updatedDataArrayRefs, dataArrays = updatedDataArrays }
+        updatedDatasets =
+            Dict.insert curDatasetRef updatedDataset curXModel.datasets
+        updatedXModel =
+            { curXModel 
+                | datasets = updatedDatasets 
+                , updatedHeaderPath = Just updatedHeaderPath
+                }
+    in
+    updatedXModel
+
+removeDataArray : DatasetRef -> DataArrayRef -> HeaderPath -> XModel -> XModel
+removeDataArray curDatasetRef curDataArrayRef headerPath curXModel =
+    let
+        curDataset =
+            Dict.get curDatasetRef curXModel.datasets |> Maybe.withDefault emptyDataset
+        updatedDataArrayRefs =
+            List.filter (\ref -> ref /= curDataArrayRef) curDataset.dataArrayRefs
+        updatedDataArrays =
+            Dict.remove curDataArrayRef curDataset.dataArrays
+        updatedDataset =
+            { curDataset | dataArrayRefs = updatedDataArrayRefs, dataArrays = updatedDataArrays }
+        updatedDatasets =
+            Dict.insert curDatasetRef updatedDataset curXModel.datasets
+        dArIndex =
+            elemIndexList curDataArrayRef curDataset.dataArrayRefs |> Maybe.withDefault -1
+        dArIndexToFocus =
+            if dArIndex + 1 == List.length curDataset.dataArrayRefs then
+                dArIndex - 1
+            else
+                dArIndex + 1
+        dArToFocus =
+            getAtList dArIndexToFocus curDataset.dataArrayRefs |> Maybe.withDefault "errorGettingCoord"
+        updatedHeaderPath =
+            updateHeaderPath headerPath dArToFocus
+    in
+    { curXModel 
+        | datasets = updatedDatasets 
+        , updatedHeaderPath = Just updatedHeaderPath
+    }
+insertCoordAt : Coord -> DimRef -> Int -> Dims -> Dims
+insertCoordAt coord dimRef coordIndex dims =
+    let
+        maybeCoords =
+            Dict.get dimRef dims
+    in
+    case maybeCoords of
+        Just coords ->
+            Dict.insert dimRef (Array.Extra.insertAt coordIndex coord coords) dims
+
+        Nothing ->
+            dims
+
+insertCoordBefore : Coord -> DimRef -> Coord -> Dims -> Dims
+insertCoordBefore coord dimRef curCoord dims =
+    let
+        maybeCoords =
+            Dict.get dimRef dims
+    in
+    case maybeCoords of
+        Just coords ->
+            let
+                coordIndex =
+                    elemIndexAr curCoord coords |> Maybe.withDefault -1
+            in
+            if coordIndex >= 0 then
+                Dict.insert dimRef (Array.Extra.insertAt coordIndex coord coords) dims
+
+            else
+                dims
+
+        Nothing ->
+            dims
+
+insertCoordAfter : Coord -> DimRef -> Coord -> Dims -> Dims
+insertCoordAfter coord dimRef curCoord dims =
+    let
+        maybeCoords =
+            Dict.get dimRef dims
+    in
+    case maybeCoords of
+        Just coords ->
+            let
+                coordIndex =
+                    elemIndexAr curCoord coords |> Maybe.withDefault -1
+            in
+            if coordIndex >= 0 then
+                Dict.insert dimRef (Array.Extra.insertAt (coordIndex+1) coord coords) dims
+
+            else
+                dims
+
+        Nothing ->
+            dims
+
+-- coord and array name updates
+renameCoord : Dims -> DimOrDAr -> Coord -> XValue -> HeaderPath -> XModel -> XModel
+renameCoord dims dimVariant oldCoordValue newCoordValue curHeaderPath curXModel =
+    case dimVariant of
+        CategDimRef dimRef ->
+            let
+                updatedDims =
+                    updateDimCoordValue dims dimVariant oldCoordValue newCoordValue
+                updatedHeaderPath =
+                    updateHeaderPath curHeaderPath (XParser.render newCoordValue)
+            in
+            updateXModelFromCoordChange updatedDims RenameCoord updatedHeaderPath curXModel
+
+        _ ->
+            curXModel
+
+-- dimRef and array name updates
+newDimName : Dims -> DimRef
+newDimName dims =
+    let
+        dimName =
+            "dim" ++ AppUtil.getUppercaseLetter (List.length (Dict.keys dims) + 1)
+    in
+    dimName
+
+newDimRef : DimRef -> DatasetRef -> Tray -> XModel -> XModel
+newDimRef dimName curDatasetRef tray curXModel =
+    updateXModelFromDimRefChange curDatasetRef curXModel.dims (InsertDim dimName tray ) curXModel
+
+renameDimRef : Dims -> DatasetRef -> DimRef  -> XValue -> XModel -> XModel
+renameDimRef dims curDatasetRef oldDimRef newDimRefValue  curXModel =
+-- used both for real renaming and "linking" to an exisitng dimRef
+    let
+        changedDimRef =
+            XParser.render newDimRefValue
+        hasToLink = myLog "hasToLink" <|
+            List.member changedDimRef (Dict.keys dims) && oldDimRef /= changedDimRef
+        updatedDims =
+            if hasToLink then
+                updateDimsFromDimRefRename dims oldDimRef newDimRefValue
+            else -- left if to handle future cases
+                updateDimsFromDimRefRename dims oldDimRef newDimRefValue
+            
+        changeToProcess = --myLog "changeToProcess" <|
+            if hasToLink  then
+                LinkDim oldDimRef changedDimRef
+            else
+                RenameDim oldDimRef changedDimRef 
+    in
+    updateXModelFromDimRefChange curDatasetRef updatedDims changeToProcess curXModel
+
+-- only in current dataset
+removeDimRef : DimRef -> DatasetRef  -> XModel -> XModel
+removeDimRef dimName curDatasetRef curXModel =
+    updateXModelFromDimRefChange curDatasetRef curXModel.dims (RemoveDim dimName) curXModel
+
+-- in all datasets and in XModel dims
+destroyDimRef : DimRef -> DatasetRef  -> XModel -> XModel
+destroyDimRef dimName curDatasetRef curXModel =
+    updateXModelFromDimRefChange curDatasetRef curXModel.dims (DestroyDim dimName) curXModel
+
+-- provisional, may be rationalized to single functions for each type of change
+-- DVarDimRef is filtered out before and not handled here, only CategDimRef
+updateXModelFromDimRefChange : DatasetRef  -> Dims -> DimChange -> XModel -> XModel
+updateXModelFromDimRefChange curDatasetRef passedDims changeType curXModel =
+    case changeType of
+        RenameDim oldDimRef changedDimRef ->
+            let
+                affectedDatasets =
+                    List.filter (\datasetRef -> AppUtil.intersectBool [oldDimRef] (Dict.get datasetRef curXModel.datasets 
+                        |> Maybe.withDefault emptyDataset).dimRefs) curXModel.datasetRefs
+                --_ = myLog "RenameDim" <|
+                --    (oldDimRef, changedDimRef, affectedDatasets)
+
+                updateDataset curDataset =
+                    let
+                        updatedDimRefs =
+                            AppUtil.renameListItem oldDimRef changedDimRef curDataset.dimRefs
+                    in
+                    { curDataset | dimRefs = updatedDimRefs }
+
+                updatedDatasets =
+                    List.foldl
+                        (\datasetRef acc ->
+                            Dict.update datasetRef (Maybe.map updateDataset) acc
+                        )
+                        curXModel.datasets
+                        affectedDatasets
+                datasetRefsToRecalc =
+                    List.append curXModel.datasetsToRecalc affectedDatasets
+                dimChangesToProcess =
+                    List.append curXModel.dimChanges [changeType]
+            in
+            { curXModel 
+                | dims = passedDims
+                , datasets = updatedDatasets
+                , datasetsToRecalc = datasetRefsToRecalc 
+                , dimChanges = dimChangesToProcess
+                , updatedDimOrDArRef = Just changedDimRef
+            }
+        InsertDim dimName tray ->
+            let
+                -- no other affectedDatasets
+                curDataset =
+                    Dict.get curDatasetRef curXModel.datasets |> Maybe.withDefault emptyDataset
+                coordName =
+                    newCoordName dimName passedDims
+                updatedDims =
+                    Dict.insert dimName (Array.fromList [coordName]) passedDims
+                updatedDimRefs =
+                        List.append curDataset.dimRefs [dimName]
+                updatedDataArrays =
+                        Dict.map (\_ dataArray -> 
+                                let
+                                    resultDataArray =
+                                        remapDataInDataArrayToNewDims 
+                                            curXModel 
+                                            (Ok dataArray) 
+                                            (Just updatedDimRefs , updatedDims )
+                                in
+                                case resultDataArray of
+                                    Ok dataArrayOk ->
+                                        dataArrayOk
+
+                                    Err _ ->
+                                        dataArray
+                            ) 
+                            curDataset.dataArrays
+                updatedDataset  =
+
+                    { curDataset 
+                        | dimRefs = updatedDimRefs 
+                        , dataArrays = updatedDataArrays
+                    }
+
+                updatedDatasets =
+                    Dict.map
+                        (\datasetRef dataset ->
+                            if datasetRef == curDataset.ref then
+                                updatedDataset
+                            else
+                                dataset
+                        )
+                        curXModel.datasets
+                        
+                datasetRefsToRecalc =
+                    List.append curXModel.datasetsToRecalc [updatedDataset.ref]
+                dimChangesToProcess = curXModel.dimChanges
+                    -- List.append curXModel.dimChanges [changeType]  -- disabled to avoid double view generations
+            in
+            { curXModel 
+                | dims = updatedDims
+                , datasets = updatedDatasets
+                , datasetsToRecalc = datasetRefsToRecalc 
+                , dimChanges = dimChangesToProcess
+                , updatedDimOrDArRef = Just dimName
+            }
+
+        RemoveDim dimName ->
+            let
+                datasetsWithRemovedDim =
+                    List.filter (\datasetRef -> AppUtil.intersectBool [dimName] (Dict.get datasetRef curXModel.datasets 
+                        |> Maybe.withDefault emptyDataset).dimRefs) curXModel.datasetRefs
+                affectedDatasets =
+                    [curDatasetRef] 
+                    
+
+                updatedDims =
+                    if List.length datasetsWithRemovedDim == 1 then
+                        Dict.remove dimName passedDims
+                    else    
+                        passedDims
+                updateDataset curDatasetArg =
+                    let
+                        updatedDimRefs =
+                            List.filter (\dimRef -> dimRef /= dimName) curDatasetArg.dimRefs
+                        updatedDataArrays =
+                                Dict.map (\_ dataArray -> 
+                                        let
+                                            resultDataArray =
+                                                remapDataInDataArrayToNewDims 
+                                                    curXModel 
+                                                    (Ok dataArray) 
+                                                    (Just updatedDimRefs , updatedDims )
+                                        in
+                                        case resultDataArray of
+                                            Ok dataArrayOk ->
+                                                dataArrayOk
+
+                                            Err _ ->
+                                                dataArray
+                                    ) 
+                                    curDatasetArg.dataArrays
+                        
+                    in
+                    { curDatasetArg 
+                        | dimRefs = updatedDimRefs 
+                        , dataArrays = updatedDataArrays}
+                
+                curDataset =
+                    Dict.get curDatasetRef curXModel.datasets |> Maybe.withDefault emptyDataset
+                    
+
+                updatedDatasets =
+                    List.foldl
+                        (\datasetRef acc ->
+                            Dict.update datasetRef (Maybe.map updateDataset) acc
+                        )
+                        curXModel.datasets
+                        affectedDatasets
+                datasetRefsToRecalc =
+                    List.append curXModel.datasetsToRecalc affectedDatasets
+                dimChangesToProcess =
+                    List.append curXModel.dimChanges [changeType]
+            in
+            { curXModel 
+                | dims = updatedDims
+                , datasets = updatedDatasets
+                , datasetsToRecalc = datasetRefsToRecalc 
+                , dimChanges = dimChangesToProcess
+               -- , updatedDimRef = updatedDimRef -- not here, tray not visible
+            }
+        LinkDim oldDimRef changedDimRef -> 
+            let
+                -- no other affectedDatasets
+                -- just substitute the oldDimRef with the changedDimRef in the dataset dimRefs
+                -- then get the updatedDims mapping the changed dimRefs
+                -- from the existing dim in xModel and remap the dataArrays
+                curDataset =
+                    Dict.get curDatasetRef curXModel.datasets |> Maybe.withDefault emptyDataset
+                updatedDimRefs =
+                        AppUtil.renameListItem oldDimRef changedDimRef curDataset.dimRefs
+                updatedDims =
+                    dimsForDimRefs curXModel updatedDimRefs |> Maybe.withDefault curXModel.dims
+                updatedDataArrays =
+                        Dict.map (\_ dataArray -> 
+                                let
+                                    resultDataArray =
+                                        remapDataInDataArrayToNewDims 
+                                            curXModel 
+                                            (Ok  dataArray)
+                                            (Just updatedDimRefs , updatedDims )
+                                in
+                                case resultDataArray of
+                                    Ok dataArrayOk ->
+                                        dataArrayOk
+
+                                    Err _ ->
+                                        dataArray
+                            ) 
+                            curDataset.dataArrays
+                updatedDataset  =
+                    { curDataset 
+                        | dimRefs = updatedDimRefs 
+                        , dataArrays = updatedDataArrays
+                    }
+
+                updatedDatasets =
+                    Dict.map
+                        (\datasetRef dataset ->
+                            if datasetRef == curDataset.ref then
+                                updatedDataset
+                            else
+                                dataset
+                        )
+                        curXModel.datasets
+                        
+                datasetRefsToRecalc =
+                    List.append curXModel.datasetsToRecalc [updatedDataset.ref]
+                dimChangesToProcess = curXModel.dimChanges
+                    -- List.append curXModel.dimChanges [changeType]  -- disabled to avoid double view generations
+            in
+            { curXModel 
+                | dims = updatedDims
+                , datasets = updatedDatasets
+                , datasetsToRecalc = datasetRefsToRecalc 
+                , dimChanges = dimChangesToProcess
+            }
+        DestroyDim dimName ->
+            let
+                datasetsWithRemovedDim =
+                    List.filter (\datasetRef -> AppUtil.intersectBool [dimName] (Dict.get datasetRef curXModel.datasets 
+                        |> Maybe.withDefault emptyDataset).dimRefs) curXModel.datasetRefs
+                affectedDatasets =
+                    datasetsWithRemovedDim
+                    
+
+                updatedDims =
+                        Dict.remove dimName passedDims
+                updateDataset curDataset =
+                    let
+                        updatedDimRefs =
+                            List.filter (\dimRef -> dimRef /= dimName) curDataset.dimRefs
+                        updatedDataArrays =
+                                Dict.map (\_ dataArray -> 
+                                        let
+                                            resultDataArray =
+                                                remapDataInDataArrayToNewDims 
+                                                    curXModel 
+                                                    (Ok dataArray) 
+                                                    (Just updatedDimRefs , updatedDims )
+                                        in
+                                        case resultDataArray of
+                                            Ok dataArrayOk ->
+                                                dataArrayOk
+
+                                            Err _ ->
+                                                dataArray
+                                    ) 
+                                    curDataset.dataArrays
+                        
+                    in
+                    { curDataset 
+                        | dimRefs = updatedDimRefs 
+                        , dataArrays = updatedDataArrays}
+
+                updatedDatasets =
+                    List.foldl
+                        (\datasetRef acc ->
+                            Dict.update datasetRef (Maybe.map updateDataset) acc
+                        )
+                        curXModel.datasets
+                        affectedDatasets
+                datasetRefsToRecalc =
+                    List.append curXModel.datasetsToRecalc affectedDatasets
+                dimChangesToProcess =
+                    List.append curXModel.dimChanges [changeType]
+            in
+            { curXModel 
+                | dims = updatedDims
+                , datasets = updatedDatasets
+                , datasetsToRecalc = datasetRefsToRecalc 
+                , dimChanges = dimChangesToProcess
+            }
+
+
+updateDimsFromDimRefRename : Dims -> DimRef -> XValue -> Dims
+updateDimsFromDimRefRename dims oldDimRef newDimRefValue =
+    let
+        maybeCoords =
+            Dict.get oldDimRef dims
+    in
+    case (maybeCoords , newDimRefValue) of
+        (Just coords , XString newDimRefString) ->
+            let
+                updatedDims =
+                    Dict.insert newDimRefString coords (Dict.remove oldDimRef dims)
+            in
+            updatedDims
+
+        _ ->
+            dims
+updateDimCoordValue : Dims -> DimOrDAr -> Coord -> XValue -> Dims
+updateDimCoordValue dims dimVariant oldCoordValue newCoordValue =
+    case ( dimVariant , newCoordValue )of
+        ( CategDimRef dimRef , XString newStringValue )-> 
+            Dict.update dimRef
+                (Maybe.map (\coordsArray ->
+                    let
+                        updatedCoords =
+                            Array.indexedMap (\index existingCoord ->
+                                if existingCoord == oldCoordValue then
+                                    newStringValue
+                                else
+                                    existingCoord
+                            ) coordsArray
+                    in
+                    updatedCoords
+                ))
+                dims
+
+        _ -> -- no update for DVarDimRef
+            dims
+
+renameDataArray : XModel -> DatasetRef -> DataArrayRef -> DataArrayRef -> XModel
+renameDataArray xModel datasetRef oldRef newRef =
+    let
+        maybeDataset =
+            getDatasetByRef datasetRef xModel.datasets
+    in
+    case maybeDataset of
+        Just dataset ->
+            let
+                maybeDataArray =
+                    getDataArrayByRef oldRef dataset.dataArrays
+            in
+            case maybeDataArray of
+                Just dataArray ->
+                    let
+                        updatedDataArrays =
+                            Dict.insert newRef { dataArray | ref = newRef } 
+                                (Dict.remove oldRef dataset.dataArrays)
+                        updatedDataArrayRefs =
+                            List.map (\ref -> if ref == oldRef then newRef else ref) dataset.dataArrayRefs
+
+                        updatedDataset =
+                            { dataset 
+                                | dataArrays = updatedDataArrays 
+                                , dataArrayRefs = updatedDataArrayRefs
+                                }
+
+                        updatedDatasets =
+                            Dict.insert datasetRef updatedDataset xModel.datasets
+                    in
+                    -- Debug.log ("updatedDataArrayRefs: " ++ Debug.toString updatedDataArrayRefs)
+                    { xModel | datasets = updatedDatasets }
+
+
+                Nothing ->
+                    xModel
+
+        Nothing ->
+            xModel
+
 
 
 
@@ -2504,13 +2753,8 @@ type alias AggrFuncString =
     Array String -> String
 
 
-arRank : RankUnaryFuncFloat
-
-
-
 -- 1-based rank, duplicates get the same rank
-
-
+arRank : RankUnaryFuncFloat
 arRank floatArray val =
     let
         sortedList =
@@ -2881,8 +3125,8 @@ mapPosVecs arSrc arDest =
             case ( arDest.localDims, arDest.localDimRefs ) of
                 ( Just dimsDest, Just dimRefsDest ) ->
                     let
-                        coordVecs =
-                            itemCoordVecsForDims dimsDest dimRefsDest
+                        coordVecs = --myLog "coordVecs"
+                            (itemCoordVecsForDims dimsDest dimRefsDest)
 
                         posVecs =
                             Array.map
@@ -2892,6 +3136,7 @@ mapPosVecs arSrc arDest =
                                             posVec
 
                                         Nothing ->
+                                            myLog "Invalid coordVecDest in mapPosVec"
                                             []
                                 )
                                 coordVecs
@@ -2899,14 +3144,16 @@ mapPosVecs arSrc arDest =
                     Just ( posVecs, dimsSrc, dimRefsSrc )
 
                 _ ->
+                    myLog "Invalid arDest dims in mapPosVecs" 
                     Nothing
 
         _ ->
+            myLog "Invalid arSrc dims in mapPosVecs" 
             Nothing
 
 
 
--- returns an array of flatIndices in the src DataArray parallel to the flatIndices in the dest DataArray
+-- returns an array of flatIndices in the src DataArray parallel to the 0..N flatIndices in the dest DataArray
 -- used to get data from the src DataArray and consume them in the dest DataArray
 
 
@@ -2922,6 +3169,10 @@ mapFlatIndices arSrc arDest =
             calcFlatIndicesFast dims dimRefs posVecs
 
         Nothing ->
+            let
+                _ =
+                    myLog "Invalid arSrc or arDest in mapFlatIndices" maybePosVecs
+            in
             Array.empty
 
 
@@ -3090,7 +3341,12 @@ aggrDataArrayUnaryAr arSrc aggrFunc aggrDimRefs dataArrayRef =
 -- returns tuple (maybe DataArray, maybe pivotDimRef)
 
 
-funcDataArrayPair : XModel -> DataArray -> DataArray -> BinaryFuncFloat -> ( Maybe DataArray, Maybe DimRef )
+funcDataArrayPair : 
+    XModel 
+    -> DataArray 
+    -> DataArray 
+    -> BinaryFuncFloat 
+    -> ( Maybe DataArray, Maybe DimRef )
 funcDataArrayPair xModel arSrc arDest binaryFunc =
     let
         ( srcDimRefs, srcDims ) =
@@ -3112,12 +3368,9 @@ funcDataArrayPair xModel arSrc arDest binaryFunc =
                             -- brute force map calc on the whole data arrays with the same localDims
                             -- with single coord array mapping does not work
                             if
-                                dimsSrc
-                                    == dimsDest
-                                    && dimRefsSrc
-                                    == dimRefsDest
-                                    && Array.length arSrc.data
-                                    == Array.length arDest.data
+                                dimsSrc == dimsDest
+                                    && dimRefsSrc == dimRefsDest
+                                    && Array.length arSrc.data == Array.length arDest.data
                             then
                                 -- if (Array.length arSrc.data) == (Array.length arDest.data) then
                                 arSrc.data
@@ -3165,7 +3418,11 @@ funcDataArrayPair xModel arSrc arDest binaryFunc =
 -- removed xModel from the signature, differemt from the homonime used in interpreter
 
 
-funcDataArrayPairAr : DataArray -> DataArray -> BinaryFuncFloat -> ( Maybe DataArray, Maybe DimRef )
+funcDataArrayPairAr : 
+    DataArray 
+    -> DataArray 
+    -> BinaryFuncFloat 
+    -> ( Maybe DataArray, Maybe DimRef )
 funcDataArrayPairAr arSrc arDest binaryFunc =
     let
         ( srcDimRefs, srcDims ) =
@@ -3235,18 +3492,23 @@ funcDataArrayPairAr arSrc arDest binaryFunc =
 
 
 -- remaps the data array data to the newDims, dimRefs unchanged
+-- used with structure changes
 remapDataInDataArrayToNewDims :
     XModel
     -> Result String DataArray
-    -> Dims 
+    -> (Maybe (List DimRef) , Dims ) 
     -> Result String DataArray
-remapDataInDataArrayToNewDims xModel arPre newDims =
+remapDataInDataArrayToNewDims xModel arPre (newDimRefs , newDims) =
     case arPre of
         Ok arPreOk  ->
             let
 
                 ( preDimRefs, preDims ) =
                     dimInfoForDataArray xModel arPreOk
+                postDimRefs = 
+                    case newDimRefs of
+                        Just refs -> newDimRefs
+                        Nothing -> preDimRefs
             in
             case preDims  of
                 -- extend checks to localDimRefs
@@ -3255,14 +3517,22 @@ remapDataInDataArrayToNewDims xModel arPre newDims =
                         Ok arPreOk
                     else
                     let
-                        arDummyOkWithDims =
-                            { arPreOk | localDims = Just newDims, localDimRefs =  preDimRefs }
+                        arPostOkWithDims =
+                            { arPreOk | localDims = Just newDims, localDimRefs =  postDimRefs }
+
 
                         arPreOkWithDims =
                             { arPreOk | localDims = Just dimsPre, localDimRefs = preDimRefs }
 
-                        mappedIndices = -- positions in arPreOk.data for each position in arDummyOk.data
-                            mapFlatIndices arPreOkWithDims arDummyOkWithDims 
+                        mappedIndices = -- positions in arPreOk.data for each position in arPostOk.data
+                            --myLog "mappedIndices" 
+                                (mapFlatIndices arPreOkWithDims arPostOkWithDims )  
+                        _ = logIf False -- (mappedIndices == Array.empty) 
+                                "scenario dims" 
+                                --(arPreOkWithDims.localDimRefs , arPostOkWithDims.localDimRefs)
+                                (Dict.get "scenario" dimsPre , Dict.get "scenario" newDims)
+
+
                         arNewData =
                                 if isDataArrayText arPreOk then
                                     Array.empty
@@ -3291,8 +3561,8 @@ remapDataInDataArrayToNewDims xModel arPre newDims =
                                     Array.empty
 
                     in
-                    -- put localDIms for debugging
-                    Ok { arPreOk | data = arNewData , text = arNewText, localDims = Just newDims, localDimRefs =  preDimRefs}
+                    -- removed localDims cannot be there when remapping assuming use of xModel.dims
+                    Ok { arPreOk | data = arNewData , text = arNewText} --, localDims = Just newDims, localDimRefs =  preDimRefs}
 
                 -- keeps dims and dimRefs, but changes data as calculated
                 _ ->
@@ -3303,6 +3573,7 @@ remapDataInDataArrayToNewDims xModel arPre newDims =
             -- Debug.log ("\narPart: " ++ Debug.toString(arPart))
             Err "Error in remapDataInDataArrayToNewDims >= WRONG Ok arPreOk"
 
+-- equivalent to funcDataArrayPair wrapping DataArray in Result
 updateDataArrayPair :
     XModel
     -> Result String DataArray
@@ -3505,7 +3776,7 @@ rangeDefToName xModel curDatasetRef rangeDef =
         coordSpecs dimCoords =
             List.foldl
                 (\( dimRef, coordSpec ) accStr ->
-                    case coordSpecToString coordSpec of
+                    case coordSpecifierToString coordSpec of
                         Just coordSpecJust ->
                             case getUniqueCoordDef dimRef coordSpecJust of
                                 Just uniqueCoord ->
@@ -3653,13 +3924,13 @@ rangeNameToDef xModel curDatasetRef rangeName =
                             getCoordSpec token
                     in
                     case maybeCTuple of
-                        Just ( dimRef, SingleCoord coord ) ->
+                        Just ( dimRef, CoordSingle coord ) ->
                             if dimRef == dVarIdentifier then
                                 ( coord, coordAcc, errAcc )
                                 -- dVar found signaled by dVarIdentifier
 
                             else
-                                ( daAcc, coordAcc ++ [ ( dimRef, SingleCoord coord ) ], errAcc )
+                                ( daAcc, coordAcc ++ [ ( dimRef, CoordSingle coord ) ], errAcc )
 
                         -- dimRef and coord found
                         _ ->
@@ -3692,7 +3963,7 @@ rangeNameToDef xModel curDatasetRef rangeName =
                         Just dimRefs ->
                             case dimRefs of
                                 [ dimRef ] ->
-                                    Just ( dimRef, SingleCoord coord )
+                                    Just ( dimRef, CoordSingle coord )
 
                                 -- only one dimRef, ok
                                 _ ->
@@ -3711,7 +3982,7 @@ rangeNameToDef xModel curDatasetRef rangeName =
 
                         Just foundDimRefsForCoord ->
                             if List.member dimRef foundDimRefsForCoord then
-                                Just ( dimRef, SingleCoord coord )
+                                Just ( dimRef, CoordSingle coord )
 
                             else
                                 Nothing
@@ -3872,611 +4143,3 @@ promptCoordsForPartialRangeName xModel curDatasetRef partialName =
 
 
 
--- [partialName, prependedRangeName , lastToken ]  [Debug.toString searchDict] --
--- ============== TEST DATA ==================
--- tried to move to separate module but imported types not recognized there
--- ==Dims==
-
-
-azienda : DimRef
-azienda =
-    "azienda"
-
-
-anno : DimRef
-anno =
-    "anno"
-
-
-voce : DimRef
-voce =
-    "voce"
-
-
-scenario : DimRef
-scenario =
-    "scenario"
-
-
-grChar : DimRef
-grChar =
-    "grChar"
-
-
-cigar : DimRef
-cigar =
-    "cigar"
-
-
-aziendaCoords : Array Coord
-
-
-
--- deCapitalized to make coord names usable as variables, problem with numbers
-
-
-aziendaCoords =
-    Array.fromList [ "Marzullo", "Conti" ]
-
-
-annoCoords : Array Coord
-annoCoords =
-    --Array.fromList [ "2021", "2022", "2023" ]
-    Array.fromList [ "a1", "a2", "a3"]
-
-
-
--- , "2024", "2025", "2026", "2027", "2028", "2029"]
-
-
-voceCoords : Array Coord
-voceCoords =
-    Array.fromList [ "ricavi", "costoVen", "margContrib", "speseVGA", "ebitda", "amm", "ebit", "tax", "unlevNetIncome" ]
-
-
-scenarioCoords : Array Coord
-scenarioCoords =
-    Array.fromList [ "base", "worst", "best", "forecast" ]
-
-
-caratteriGreciCoords : Array Coord
-caratteriGreciCoords =
-    Array.fromList [ "alfa", "beta", "gamma", "delta" ]
-
-
-cigarCoords : Array Coord
-cigarCoords =
-    Array.fromList [ "alfa", "nazionali" ]
-
-
-myDims : Dims
-myDims =
-    Dict.fromList
-        [ ( azienda, aziendaCoords )
-        , ( anno, annoCoords )
-        , ( voce, voceCoords )
-        , ( scenario, scenarioCoords )
-        , ( grChar, caratteriGreciCoords )
-        , ( cigar, cigarCoords )
-        ]
-
-
-
--- == ce Dataset ==
-
-
-ce : DatasetRef
-ce =
-    "Ce"
-
-
-
--- used as module name for formulas must be capitalized
-
-
-valore : DataArrayRef
-valore =
-    "valore"
-
-
-
--- used as default dataArrayRef
-
-
-note : DataArrayRef
-note =
-    "note"
-
-
-calcValore : DataArrayRef
-calcValore =
-    "calcValore"
-
-
-calcNote : DataArrayRef
-calcNote =
-    "calcNote"
-
-
-valoreList : List Float
-valoreList =
-    [ 100
-    , 0 / 0 -- for NaN
-    , 0 / 0
-    , 6
-    , 0 / 0
-    , 12
-    , 0 / 0
-    , 0 / 0
-    , 0 / 0 -- 2021 Alfa
-    , 1007
-    , 0 / 0
-    , 0 / 0
-    , 67
-    , 0 / 0
-    , 127
-    , 0 / 0
-    , 0 / 0
-    , 0 / 0 -- 2021 Beta
-    , 209
-    , 0 / 0
-    , 0 / 0
-    , 17
-    , 0 / 0
-    , 29
-    , 0 / 0
-    , 0 / 0
-    , 0 / 0 -- 2022 Alfa
-    , 2007
-    , 0 / 0
-    , 0 / 0
-    , 127
-    , 0 / 0
-    , 247
-    , 0 / 0
-    , 0 / 0
-    , 0 / 0 -- 2022 Beta
-    , 300
-    , 0 / 0
-    , 0 / 0
-    , 18
-    , 0 / 0
-    , 16
-    , 0 / 0
-    , 0 / 0
-    , 0 / 0 -- 2023 Alfa
-    , 3007
-    , 0 / 0
-    , 0 / 0
-    , 187
-    , 0 / 0
-    , 167
-    , 0 / 0
-    , 0 / 0
-    , 0 / 0 -- 2023 Beta
-    ]
-
-
-valoreArray : Array Float
-valoreArray =
-    Array.fromList valoreList
-
-
-
--- ++ valoreList ++ valoreList)
-
-
-ceDataArrays : DataArrays
-ceDataArrays =
-    Dict.fromList
-        [ ( valore
-          , { ref = valore
-            , datasetRef = Just ce
-            , data = valoreArray
-            , text = Array.empty
-            , localDims = Nothing
-            , localDimRefs = Nothing
-            , pointedFormulas = Dict.empty
-            }
-          )
-        ]
-
-
-ceFormulas : ModuleSource
-ceFormulas =
-    """module Ce exposing (..)
--- getExprDataArray errors on taxRate, browser hangs; cyclic update may stall?!
--- error in getExprDataArray are overcome by parsing the module
--- check cycle in calcExpressionToXModel
-mySub : Float -> Float -> Float -- parsing does not catch declaration errors
-mySub val1 val2 = val1 - val2 -- errors are raised in range parsing
-taxRate : Float -- declaring aconstant expr is not needed, no longer parsing errors
-taxRate = 0.4
--- mapping between datasets thanks to order swap in evalNonVariant before
--- executing Kernel.twoNumbers when a binary func is applied
-costoVen = ce__valore_ricavi * 0.48 * macro__cambioUsdEur_base -- uses expansion of rangeName from getExprDataArray
-ce__valore_margContrib = mySub ce__valore_ricavi ce__valore_costoVen
-ce__valore_ebitda = ce__valore_margContrib - ce__valore_speseVGA
-ce__valore_ebit = ce__valore_ebitda - ce__valore_amm
-ce__valore_tax = ce__valore_ebit * taxRate
-ce__valore_unlevNetIncome = ce__valore_ebit - ce__valore_tax
-
-
-"""
-
-
-macroFormulas : ModuleSource
-macroFormulas =
-    """module Macro exposing (..)
-macro__inflazione_forecast = macro__inflazione_base * 1.02
-macro__cambioUsdEur_forecast = macro__cambioUsdEur_base * 3.07
-macro__cambioCalc = macro__cambioUsdEur * 5 -- calc on dataArrays not yet implemented
-dependentDatasetRefs = ["Ce"]
-
-"""
-
-
-azFormulas : ModuleSource
-azFormulas =
-    """module Az exposing (..)
--- add formulas for Az
-az__nrDip_beta = az__nrDip_alfa + az__nrDip_alfa -- unary func not working
-
-"""
-
-
-
---     , (note, { ref = note
---                  , datasetRef = Just ce
---                  , data = Array.empty
---                  , text = Array.repeat (Array.length valoreArray) ""
---                  , localDims = Nothing
---                  , localDimRefs = Nothing
---                  })
---    , (calcValore, { ref = calcValore
---                  , datasetRef = Just ce
---                  , data = Array.repeat (Array.length valoreArray)  (0/0)
---                  , text = Array.empty
---                  , localDims = Nothing
---                  , localDimRefs = Nothing
---                  })
---    , (calcNote, { ref = calcNote
---                  , datasetRef = Just ce
---                  , data = Array.empty
---                  , text = Array.repeat (Array.length valoreArray) ""
---                  , localDims = Nothing
---                  , localDimRefs = Nothing
---                  })
--- == az Dataset ==
-
-
-az : DatasetRef
-az =
-    "Az"
-
-
-nome : DataArrayRef
-nome =
-    "nome"
-
-
-settore : DataArrayRef
-settore =
-    "settore"
-
-
-nrDip : DataArrayRef
-nrDip =
-    "nrDip"
-
-
-nomeArray : Array String
-nomeArray =
-    Array.fromList
-        [ "Alfa SpA"
-        , "Beta SpA"
-        , "Alfa SpA"
-        , "Beta SpA"
-        , "Alfa SpA"
-        , "Beta SpA"
-        ]
-
-
-settoreArray : Array String
-settoreArray =
-    Array.fromList
-        [ "Industria"
-        , "Commercio" -- per anno
-        , "Industria"
-        , "Commercio"
-        , "Industria"
-        , "Commercio"
-        ]
-
-
-nrDipArray : Array Float
-nrDipArray =
-    Array.fromList
-        [ 10
-        , 0 / 0
-        , 12
-        , 0 / 0
-        , 20
-        , 0 / 0
-        ]
-
-
-azDataArrays : DataArrays
-azDataArrays =
-    Dict.fromList
-        [ ( nome
-          , { ref = nome
-            , datasetRef = Just az
-            , data = Array.empty
-            , text = nomeArray
-            , localDims = Nothing
-            , localDimRefs = Nothing
-            , pointedFormulas = Dict.empty
-            }
-          )
-        , ( settore
-          , { ref = settore
-            , datasetRef = Just az
-            , data = Array.empty
-            , text = settoreArray
-            , localDims = Nothing
-            , localDimRefs = Nothing
-            , pointedFormulas = Dict.empty
-            }
-          )
-        , ( nrDip
-          , { ref = nrDip
-            , datasetRef = Just az
-            , data = nrDipArray
-            , text = Array.empty
-            , localDims = Nothing
-            , localDimRefs = Nothing
-            , pointedFormulas = Dict.empty
-            }
-          )
-        ]
-
-
-
--- == macro Dataset ==
-
-
-macro : DatasetRef
-macro =
-    "Macro"
-
-
-inflazione : DataArrayRef
-inflazione =
-    "inflazione"
-
-
-cambioUsdEur : DataArrayRef
-cambioUsdEur =
-    "cambioUsdEur"
-
-
-cambioCalc : DataArrayRef
-cambioCalc =
-    "cambioCalc"
-
-
-inflazioneArray : Array Float
-inflazioneArray =
-    Array.fromList
-        [ 2.3
-        , 10.5
-        , 1.5
-        , 0 / 0 -- 2021
-        , 3.1
-        , 14
-        , 2.4
-        , 0 / 0
-        , 4.6
-        , 20
-        , 3.1
-        , 0 / 0
-        ]
-
-
-cambioUsdEurArray : Array Float
-cambioUsdEurArray =
-    Array.fromList
-        [ 1.1
-        , 1.2
-        , 1.3
-        , 0 / 0 -- 2021
-        , 1.0
-        , 0.9
-        , 0.8
-        , 0 / 0
-        , 1.5
-        , 1.6
-        , 1.7
-        , 0 / 0
-        ]
-
-
-cambioCalcArray : Array Float
-cambioCalcArray =
-    Array.fromList
-        [ 0 / 0
-        , 0 / 0
-        , 0 / 0
-        , 0 / 0
-        , 0 / 0
-        , 0 / 0
-        , 0 / 0
-        , 0 / 0
-        , 0 / 0
-        , 0 / 0
-        , 0 / 0
-        , 0 / 0
-        ]
-
-
-macroDataArrays : DataArrays
-macroDataArrays =
-    Dict.fromList
-        [ ( inflazione
-          , { ref = inflazione
-            , datasetRef = Just macro
-            , data = inflazioneArray
-            , text = Array.empty
-            , localDims = Nothing
-            , localDimRefs = Nothing
-            , pointedFormulas = Dict.empty
-            }
-          )
-        , ( cambioUsdEur
-          , { ref = cambioUsdEur
-            , datasetRef = Just macro
-            , data = cambioUsdEurArray
-            , text = Array.empty
-            , localDims = Nothing
-            , localDimRefs = Nothing
-            , pointedFormulas = Dict.empty
-            }
-          )
-        , ( cambioCalc
-          , { ref = cambioCalc
-            , datasetRef = Just macro
-            , data = cambioCalcArray
-            , text = Array.empty
-            , localDims = Nothing
-            , localDimRefs = Nothing
-            , pointedFormulas = Dict.empty
-            }
-          )
-        ]
-
-
-
--- === Greche dataset to test duplicate coord names ===
-
-
-greche : DatasetRef
-greche =
-    "Greche"
-
-
-greekDAr : DataArrayRef
-greekDAr =
-    "caratteriGreci"
-
-
-caratteriGreciArrayText : Array String
-caratteriGreciArrayText =
-    Array.fromList [ "α", "β", "γ", "δ", "ε", "ζ", "η", "θ" ]
-
-
-caratteriGreciArrayFloat : Array Float
-caratteriGreciArrayFloat =
-    Array.fromList [ 0, 1, 2, 3, 4, 5, 6, 7 ]
-
-
-myDatasets =
-    Dict.fromList
-        [ ( ce
-          , { ref = ce
-
-            -- order changed, now seems ok
-            , dimRefs = [ anno, azienda, voce ] -- ordered list of dims
-            , dataArrayRefs = [ valore ] -- [valore, note, calcValore, calcNote]
-            , dataArrays = ceDataArrays
-            , formulas = ceFormulas
-            , defaultDataArrayRef = Just valore
-            }
-          )
-        , ( az
-          , { ref = az
-            , dimRefs = [ anno, azienda ] -- ordered list of dims
-            , dataArrayRefs = [ nome, settore, nrDip ]
-            , dataArrays = azDataArrays
-            , formulas = azFormulas
-            , defaultDataArrayRef = Nothing
-            }
-          )
-        , ( macro
-          , { ref = macro
-            , dimRefs = [ anno, scenario ] -- ordered list of dims
-            , dataArrayRefs = [ inflazione, cambioUsdEur, cambioCalc ]
-            , dataArrays = macroDataArrays
-            , formulas = macroFormulas
-            , defaultDataArrayRef = Nothing
-            }
-          )
-        , ( greche
-          , { ref = greche
-            , dimRefs = [ grChar, cigar ] -- ordered list of dims
-            , dataArrayRefs = [ greekDAr ]
-            , dataArrays =
-                Dict.fromList
-                    [ ( greekDAr
-                      , { ref = greekDAr
-                        , datasetRef = Just greche
-                        , data = caratteriGreciArrayFloat
-                        , text = caratteriGreciArrayText
-                        , localDims = Nothing
-                        , localDimRefs = Nothing
-                        , pointedFormulas = Dict.empty
-                        }
-                      )
-                    ]
-            , formulas = ""
-            , defaultDataArrayRef = Nothing
-            }
-          )
-        ]
-
-
-myXModel : XModel
-myXModel =
-    { modelRef = "finPlan"
-    , datasetRefs = [ ce, az, macro ]
-    , datasets = myDatasets
-    , dims = myDims -- arrays are hyerarchicallly stored in datasets
-    , datasetsToRecalc = []
-    }
-
-
-
--- == test values for elm-interpreter ==
--- added by Luca in first atempts, no longer relevant
--- env is a store of Value's processable in Expression.evalExpression
--- I added DataArray as Value type, they are visible to console expressions "as is"
--- but cannot be processed, that would require adding logic to Value.toExpr for that type
--- for data marshalling and unmarshalling to/from standard Value types
-
-
-createTestEnvValues : Dict.Dict String Value
-createTestEnvValues =
-    -- let
-    --     ds = XModel.myDatasets
-    --     dsValue = XModel.datasetsToValue ds
-    --     dsReverted = XModel.valueToDatasets dsValue -- should be equal to ds, it works
-    -- in
-    -- Debug.log( "isDsReverted" ++ Debug.toString (if ds == dsReverted then " dsReverted == ds " else "false)"))
-    -- Debug.log( "ds" ++ Debug.toString ds)
-    -- Debug.log( "dsReverted" ++ Debug.toString ds)
-    Dict.fromList
-        [-- ( "intValue", Int 42 )
-         -- , ( "floatValue", Float 3.14 )
-         -- , ( "listValue", List [ Int 1, Int 2, Int 3 ] )
-         -- , ( "tupleValue", Tuple (Int 1) (Float 2.2) )
-         -- , ( "tripleValue", Triple (Int 1) (Float 2.2) (String "three") )
-         -- , ( "datasetValue", Dataset myDataset )
-         -- let newRecord = { recordValue | name = "Gennaro"} in newRecord
-         -- returns only { name = "Gennaro" }
-         -- , ( "recordValue", Record (Dict.fromList [ ( "name", String "John" ), ( "age", Int 42 ) ]) )
-         -- , ( "intArrayValue", List (dataArrayToListValue intArray ) )
-         -- , ( "floatArrayValue", List (dataArrayToListValue floatArray ) )
-         -- , ( "stringArrayValue", List (dataArrayToListValue stringArray ) )
-         -- disabled after introducing array name parsing
-         -- , ("xm", xModelWithArDimsToValue myXModel) -- all shortened
-        ]
