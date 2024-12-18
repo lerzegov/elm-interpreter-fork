@@ -28,6 +28,10 @@ import UI.Theme as Theme
 import Value
 
 
+
+-- original miniBill console with some modifications to test my formulas
+
+
 type Msg
     = Input String
     | Eval Bool

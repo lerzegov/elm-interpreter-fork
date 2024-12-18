@@ -1,6 +1,6 @@
 module Types exposing (CallTree(..), Config, Env, EnvValues, Error(..), Eval, EvalErrorData, EvalErrorKind(..), EvalResult
     , PartialEval, PartialResult, Value(..)
-    , FormulaModuleInfo, FormulaFunctionInfo
+    , FormulaModuleInfo, FormulaFunctionInfo, emptyEnv
     , emptyModuleInfo, emptyFunctionInfo, emptyFunctionImplementation, RecalcState(..))
 
 import Array exposing (Array)
@@ -102,6 +102,16 @@ type alias Env =
     , msgLine : String
     }
 
+emptyEnv : Env
+emptyEnv =
+    { currentModule = []
+    , functions = Dict.empty
+    , functionsInFormulas = Dict.empty
+    , values = Dict.empty
+    , callStack = []
+    , envXModel = Nothing
+    , msgLine = ""
+    }
 type alias FormulaModuleInfo =
     { functionDict : Dict String FormulaFunctionInfo
     , functionCalcOrder : List String

@@ -9,13 +9,35 @@ import Time exposing (Posix, posixToMillis, now)
 import Debug
 import Process
 
+import Html
+import Html.Attributes exposing (style)
+import Element exposing (Element , paragraph, text, el)
+import Element.Font as UiFont
+
 debounce : Float -> msg -> Cmd msg
 debounce delay message =
     Process.sleep delay
         |> Task.perform (always message)
 
 
+logOnlyMessageNone : Bool -> String -> Cmd msg
+logOnlyMessageNone doLog message =
+    -- This will log only the message
+    if doLog then
+        Debug.log message Cmd.none
 
+    else
+        Cmd.none
+
+
+logOnlyMessageCmd : Bool -> String -> Cmd msg -> Cmd msg
+logOnlyMessageCmd doLog message cmd =
+    -- This will log only the message
+    if doLog then
+        Debug.log message cmd
+
+    else
+        Cmd.none
 
 myLog : String -> a -> a
 myLog message value =
@@ -66,7 +88,12 @@ splitSelected strings selected =
         result = List.foldl partition initialAcc strings
     in
     ( List.reverse result.selectedList, List.reverse result.remainingList )
-
+intersect : List comparable -> List comparable -> List comparable
+intersect list1 list2 =
+    List.filter (\x -> List.member x list2) list1
+intersectBool : List comparable -> List comparable -> Bool
+intersectBool list1 list2 =
+    List.any (\x -> List.member x list2) list1
 
 -- returns position indices of the shuffled elements in the original list
 -- e.g. shuffledIndices ["a","b","c","d"] ["c","a","d","b"] => [2,0,3,1]
@@ -140,4 +167,32 @@ cartesianProductIndex indices lengths =
                 acc * length + index
     in
     List.foldl indexHelper 0 (List.reverse (ListExtra.zip indices lengths))
+
+
+logToParagraph : String -> String -> Element msg
+logToParagraph message title =
+    let
+        logElement =
+             Element.html <| Html.div [ style "white-space" "pre-wrap" ] [ Html.text message ]
+    in
+    paragraph []
+    [ el [UiFont.size 20, UiFont.bold] (text title)
+    , logElement
+    ]
+
+
+logToParagraphLineBreak : String -> Element msg
+logToParagraphLineBreak message =
+    let
+        lines =
+            String.split "\n" message
+
+        lineElements =
+            List.map (\line -> Element.html 
+                <| Html.pre [ style "white-space" "pre" ]  
+                    [ Html.text line ]) lines
+    in
+    paragraph []
+        lineElements
+
 
